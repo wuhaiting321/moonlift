@@ -44,7 +44,7 @@
 /// i-th slot of the block's entry stack. Naming it as a parameter rather than
 /// trying to inline the predecessor's expression is what keeps a block's
 /// analysis local — and it is also literally what the value is, once the
-/// Relooper turns the graph back into structured code.
+/// structurer turns the graph back into structured code.
 pub enum Expr {
   EConst(ConstVal)
   ELocal(Int32)
@@ -190,7 +190,7 @@ fn expr_has_effect(e : Expr) -> Bool {
 /// A block's statement list is *straight-line*: it contains no control flow
 /// except the terminator, which is why the terminator is a statement too. The
 /// branch targets are block indices in the CFG rather than wasm label depths, so
-/// the Relooper (S6) can consume these without re-deriving anything.
+/// the structurer (S6) can consume these without re-deriving anything.
 pub enum Stmt {
   /// `local 3 = e`
   SLocal(Int32, Expr)

@@ -7,17 +7,18 @@ MoonBit package that `moon build` accepts and that behaves like the original mod
 `wasm`, `wasm-gc` and `js`. Correctness is not asserted — it is measured: every decompiled module
 is differentially tested against a reference engine (Node's `WebAssembly`) on random inputs.
 
-> **Status: S5 (typed stack simulation).** The byte reader, the section decoder, the MVP instruction
-> decoder, the control-flow graph and the type checker are implemented: 124 white-box tests, 9
+> **Status: S6 (control-flow structuring).** The byte reader, the section decoder, the MVP
+> instruction decoder, the type checker and the structurer are implemented: 131 white-box tests, 9
 > fixtures decoded, 19 malformed fixtures rejected with a stable error code and a byte offset.
 > `moonlift info` describes a module; `moonlift disasm` decodes every function body to `.wat`;
 > `disasm --cfg` prints basic blocks, dominators, natural loops and a reducibility verdict;
-> `disasm --stack` prints the recovered per-block expressions **and type-checks them**. On the real
-> 20 KB artifact, 72 of 79 bodies are analysed, 6 are refused by name and 1 is skipped, with
-> **nothing rejected as malformed** — the type checker agrees with the compiler that produced it.
-> The decoder is cross-checked against wabt, an independent implementation: **4,386 of 4,386
-> reachable instructions agree, 0 mismatches**, with 62 instructions in one SIMD helper deliberately
-> not attempted.
+> `disasm --stack` prints the recovered per-block expressions **and type-checks them**;
+> `disasm --struct` lowers the block graph back to nested `while` / `if` / `match` with no `br` left
+> in it. On the real 20 KB artifact, 72 of 79 bodies are structured — **395 of 395 reachable blocks
+> emitted exactly once** (the structurer's own invariant, asserted as a test) — 6 are refused by
+> name and 1 is skipped, with **nothing rejected as malformed**. The decoder is cross-checked
+> against wabt, an independent implementation: **4,423 of 4,423 reachable instructions agree, 0
+> mismatches**, with 62 instructions in one SIMD helper deliberately not attempted.
 > `decompile` and `verify` are not implemented yet — see [Roadmap](#roadmap) and
 > [BOUNDARY.md](BOUNDARY.md).
 
@@ -46,7 +47,7 @@ That is a statement about *searchable surface*, not a claim that nobody on earth
 moon build --target wasm-gc          # build the CLI
 moon run cmd/main --target wasm-gc -- help
 moon run cmd/main --target wasm-gc -- info   path/to/module.wasm
-moon run cmd/main --target wasm-gc -- disasm path/to/module.wasm [--ops|--stats|--cfg|--stack]
+moon run cmd/main --target wasm-gc -- disasm path/to/module.wasm [--ops|--stats|--cfg|--stack|--struct]
 moon run cmd/main --target wasm-gc -- decompile path/to/module.wasm -o out/
 moon run cmd/main --target wasm-gc -- verify path/to/module.wasm -n 200
 ```
@@ -159,6 +160,94 @@ second, it would return `99`. Both hazards are counted separately from the tempo
 forces (`110 forced, 1 hazard` above), because the forced ones are the source's own ordering and the
 hazard ones are the decompiler's mistakes waiting to happen.
 
+`--struct` is the step that turns the graph back into the shapes MoonBit has. It is not a graph
+algorithm on blocks: wasm already carries its own nesting tree (`block` / `loop` / `if`, each with
+an `end`), so the structurer walks that tree and only the escape depths — which a `br` encodes as a
+number — have to be re-derived. Each `block` becomes a one-shot `while true { ... }` so that a
+`break` exists to jump to its `end`; a `loop` becomes a real `while true`; and a branch that leaves
+several constructs at once first writes down how far it is going, then unwinds one construct per
+guard on the way out.
+
+The four-way dispatch of `control.wasm` leaves the block nest at four different depths — a `switch`
+over four arms, three of which jump past constructs they are nested inside:
+
+```
+$ moon run cmd/main --target wasm-gc -- disasm corpus/good/control.wasm --struct
+func 0 $f0 (param i32) (result i32)
+  ;; brk: 1 = c1, 2 = c2, 3 = c3, 4 = c4
+  while true {   ;; c1, one-shot
+    while true {   ;; c2, one-shot
+      while true {   ;; c3, one-shot
+        while true {   ;; c4, one-shot
+          match (local 0) {
+            0 => break
+            1 => brk = 3; break   ;; leave c3
+            2 => brk = 2; break   ;; leave c2
+            _ => brk = 1; break   ;; leave c1
+          }
+          break
+        }
+        if (brk >= 0) {
+          if (brk == 4) { brk = -1 }
+          else { break }
+        }
+        break
+      }
+      ...
+```
+
+`brk` is the one piece of state the output needs: which construct a pending branch is leaving, or
+`-1` for none. `break` inside the `match` lands on the innermost `while` — for `0` that is exactly
+what `br $one` means, so it is emitted bare. For the other three the branch has further to go, so
+`brk` records the destination and each guard on the way out either clears it (`brk == 4` means the
+branch only left `c4`, so execution continues in `c3`) or passes it one level further out. Nothing
+here is a state machine per block: the direct `br 0` case stays a plain `break`, and a `loop`'s back
+edge stays a plain `continue`.
+
+The loop fixture, where the exit condition arrives as a `br_if` out of a loop and lands on the
+`block` that wraps it — the shape `break` in a `for` compiles to:
+
+```
+func 1 $f1 (param i32) (result i32)
+  ;; brk: 1 = c1, 2 = c2
+  while true {   ;; c1, one-shot
+    while true {   ;; c2, loop
+      if (i32.ge_s(local 2, local 0)) {
+        brk = 1; break   ;; leave c1
+      }
+      local 1 = i32.add(local 1, local 2)
+      local 2 = i32.add(local 2, i32.const 1)
+      continue
+      if (brk != 2) { break }
+      brk = -1
+    }
+    if (brk >= 0) {
+      if (brk == 2) { brk = -1 }
+      else { break }
+    }
+    break
+  }
+```
+
+`--struct-stats` reports the work and, more importantly, the invariant behind it:
+
+```
+structured      72 of 79 bodies
+nodes           1012
+blocks emitted  395 of 395
+guards          32
+switches        0
+max depth       7
+skipped         1
+refused         6
+```
+
+`blocks emitted N of N` is a property, not a statistic: a structurer that drops a block or emits one
+twice produces output that still parses and still looks right. Every function is therefore checked
+against `visited == reachable`, and the whole suite against a second property — **no `br`, `br_if`,
+`br_table` or bare `if (...)` statement may survive into the output**, because a fallback that
+returns the graph unchanged would otherwise pass silently.
+
 `--cfg` on the four-way dispatch fixture, which is the shape a `switch` compiles to — one `br_table`
 leaving three different block nests, so block 0 has three successors:
 
@@ -187,7 +276,7 @@ grep for it.
 | `core/disasm.mbt` | `.wat`-style listing, machine listing, decode statistics | done |
 | `core/cfg.mbt` | basic blocks, dominators, natural loops, reducibility | done |
 | `core/stack.mbt` | typed stack simulation, expression recovery, reordering hazards | done |
-| `reloop/` | structuring of irreducible control flow | S6 |
+| `core/struct.mbt` | construct-tree walker: blocks/loops/ifs, multi-level escapes, `match` for `br_table` | done |
 | `emit/` | MoonBit code generation + prelude | S7 |
 | `cmd/main/` | CLI shell (no logic) | S0, S2 |
 | `corpus/` | fixtures, malformed samples, provenance, regeneration and wabt cross-check | done |
@@ -202,8 +291,8 @@ grep for it.
 | S2 | section decoding, `moonlift info` |
 | S3 | 172 MVP instructions, `.wat`-style dump, wabt cross-check |
 | S4 | CFG + dominators + natural loops + reducibility |
-| S5 | typed stack simulation, type checking, reordering hazards ← **you are here** |
-| S6 | Relooper for irreducible flow |
+| S5 | typed stack simulation, type checking, reordering hazards |
+| S6 | structuring: construct-tree walker, one-shot blocks, multi-level escapes ← **you are here** |
 | S7 | MoonBit emitter, first end-to-end decompile |
 | S8 | differential verification harness |
 | S9 | corpus expansion: more real compiler output |
@@ -216,14 +305,16 @@ grep for it.
 bash script/check.sh
 ```
 
-Runs format check, `moon check` on `wasm-gc`/`js`/`wasm`, 124 unit tests on two targets, CLI smoke
+Runs format check, `moon check` on `wasm-gc`/`js`/`wasm`, 131 unit tests on two targets, CLI smoke
 tests, every corpus fixture through the real binary, the code-layer malformed samples (each must
 report the error code written in its filename — including the one that decodes but does not
-type-check), a cross-backend comparison requiring `info`, `disasm --ops`, `disasm --cfg` and
-`disasm --stack` output to be byte-identical on all three targets, the control-flow graph on every
-fixture (no body may come out irreducible, and the `br_table` dispatch is pinned to its exact
-successor line), the pinned recovery counts of the real artifact, both reordering hazards on the
-fixture that isolates them, and the decoder against wabt.
+type-check), a cross-backend comparison requiring `info`, `disasm --ops`, `disasm --cfg`,
+`disasm --stack` and `disasm --struct` output to be byte-identical on all three targets, the
+control-flow graph on every fixture (no body may come out irreducible, and the `br_table` dispatch is
+pinned to its exact successor line), the pinned recovery counts of the real artifact, both reordering
+hazards on the fixture that isolates them, the structurer on every fixture (no raw branch statement
+may survive, and the pinned `structured` / `nodes` / `blocks emitted` / `guards` / `max depth` counts
+may not drift), and the decoder against wabt.
 
 ## License
 

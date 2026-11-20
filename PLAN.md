@@ -74,7 +74,7 @@ moonlift/
 │   ├── model/              # IR：类型、指令、模块
 │   ├── decode/             # 段解析 + 指令解码
 │   ├── analyze/            # CFG、类型化栈模拟
-│   ├── reloop/             # Relooper
+│   ├── reloop/             # 结构化（实际实现为 core/struct.mbt：走构造树，不含 relooper）
 │   ├── emit/               # MoonBit 代码生成 + 运行时 prelude
 │   ├── fixture/            # 自建 wasm 二进制生成器（测试夹具）
 │   └── cmd/main/           # CLI（executable）
@@ -128,7 +128,7 @@ moonlift verify <in.wasm> --cases 500  # 差分测试：原 wasm vs 生成代码
 | Tail call | `0x12/0x13` | `E105` |
 | memory64 / multi-memory | 段声明 >1 个 memory 或 flag 位 | `E106` |
 | memory/table/global 导入 | import 段非 func | `E107` |
-| 不可归约 CFG | Relooper 失败 | `E108` |
+| 不可归约 CFG | `br` 标签深度越界（解码期即拒绝，见 BOUNDARY §3 D3） | `E008`（`E108` 保留，无路径返回） |
 
 > **原则**：宁可报错，绝不生成「能编译但算错」的代码。这条原则写进 README 第一段。
 
@@ -155,7 +155,7 @@ bytes ──► reader(边界检查) ──► sections ──► Module IR
                         cfg builder      typed stack sim     name recovery
                             │                 │                  │
                             ▼                 ▼                  ▼
-                        relooper ────────► expr trees ──────► emitter ──► .mbt
+                        structurer ──────► expr trees ──────► emitter ──► .mbt
                                                                           │
                                                               runtime prelude
 ```
@@ -173,9 +173,9 @@ bytes ──► reader(边界检查) ──► sections ──► Module IR
 
 被否方案：`enum Value { I32(Int); I64(Int64); ... }` 统一装箱。否掉理由：每个算子都要 match，生成代码体积 ×5、性能 ×10 差，且完全不可读。
 
-**D2 · 控制流：结构化优先，Relooper 兜底**
+**D2 · 控制流：走 wasm 自带的构造树，不设 Relooper、不设图调度器**
 
-wasm 的 `block/loop/if` 本身就是结构化的，C 编译器产物 99% 可归约。所以：先按原生嵌套结构生成，只在 `br` 跨层跳出、或出现不可归约环时调用 Relooper。被否方案：无脑 Relooper（会把简单 `if` 也变成状态机，代码不可读）。
+wasm 的 `block/loop/if` 本身带着嵌套树（每个构造有 `open`/`close`），CFG 是从这棵树派生的。所以结构化直接走这棵树，只重新推导 `br` 的数字深度；`block` 落成一次性 `while true`（MoonBit 没有带标签的 `break`，只能这样给 `break` 一个落点），`loop` 落成真 `while true`，跨多层的 `br` 用一个 `int brk` 记目标、逐层 guard 解绕，`br_table` 落成 `match`。**被否方案**：① 无条件 Relooper——把普通 `if` 也变成状态机，代码不可读；② 「能结构化就走树、否则退回图调度器」——后者在本输入子集里不可达（解码期 `check_label` 已拒绝越界标签），是没人能跑、没人能测的死代码。代价是 `E108` 成为保留码，明写在 BOUNDARY §3 D3。
 
 **D3 · 代码生成：两级策略（本项目最核心的取舍）**
 
@@ -201,7 +201,7 @@ pub(open) trait Host {
 
 | 难点 | 具体问题 | 对策 |
 |---|---|---|
-| Relooper 正确性 | 多入口块、交叉跳转、`br_table` 扇出 | 先做可归约判定，能结构化就不进 relooper；不可归约显式 `E108` |
+| 结构化正确性 | 跨层 `br`、`br_table` 扇出、`if` 臂内跳转、循环回边 | 两条不变量落成断言：`visited == reachable`（395/395）与「输出零残留 `br`/`br_if`/`br_table`」；三端 `--struct` 逐字节一致 |
 | 类型化栈模拟 | `select`、`drop`、多值块出口 | 用「块出口签名」反推，失败即降 L2 |
 | f32/f64 位级语义 | NaN 传播、`nearest`（银行家舍入）、`copysign`、`min/max` 的 NaN 规则 | 手写 helper 而非用宿主 `min/max`；用差分的位比较验证 |
 | i64 无符号运算 | MoonBit `Int64` 除法是有符号 | 拆成 `UInt64` 路径；`div_s` 溢出（MIN/-1）单独 trap |
@@ -220,7 +220,7 @@ pub(open) trait Host {
 | **S3** | 指令解码 | 29 个指令形态覆盖 0x00–0xC4 全部操作码 + 0xFC；`disasm` / `--ops` / `--stats` | **已完成**：76 测试；与 wabt 逐条对拍 **4386 条全中、0 处不符**（62 条 SIMD 按设计不尝试）；7 个代码层坏样本按文件名报码；三端指令流逐字节一致 |
 | **S4** | CFG + 可归约判定 | `core/cfg.mbt`：基本块划分、支配树、自然循环、Hecht–Ullman 可归约判定；`disasm --cfg` | **已完成**：95 测试（新增 19）；真实产物 439 块 / 583 边 / 20 循环 / 循环深度 1 / **78 个完整函数全部可归约、0 个不可归约**；不可归约路径用合成图单测覆盖；三端 `--cfg` 逐字节一致 |
 | **S5** | 类型化栈模拟 | `core/stack.mbt`：块内类型化栈、表达式重建、三类别重排隐患（局部变量/内存/全局）、块边界与函数返回值校验；`disasm --stack` | **已完成**：124 测试（新增 29）；真实产物 **72/79 主体完成分析、6 个按名拒绝、1 个跳过、0 个被判非法**；111 次溢出中 **110 次强制（调用结果）+ 1 次重排隐患**；`stack.wasm` 夹具逐条钉死"读跨写"与"load 跨 store"；三端 `--stack` 逐字节一致 |
-| **S6** | Relooper | 结构化输出：`while` + 标志位 + `break`/`continue` | 3 个不可归约/多入口夹具跑通 |
+| **S6** | 结构化（原计划：Relooper） | `core/struct.mbt`：走 wasm 自带构造树，`block`→一次性 `while true`、`loop`→真 `while true`、跨层 `br` 用 `brk` 逐层解绕、`br_table`→`match`；`disasm --struct` / `--struct-stats` | **已完成**：131 测试（新增 7）；真实产物 **72/79 主体结构化、395/395 可达块各产出恰好一次、32 个 guard、0 个 switch、最大嵌套 7 层**；9 个夹具 0 条残留 `br`/`br_if`/`br_table`/`if (...)`；三端 `--struct` 逐字节一致 |
 | **S7** | MoonBit 代码生成 + prelude | 函数体、导出包装、Host trait、Memory、trap、数学 helper | 生成物 `moon check` 零报错 |
 | **S8** | 差分验证 harness | Node 参考 runner + MoonBit driver + 随机输入 + 位级比较 + 报告 | `verify` 输出通过率表；≥99% |
 | **S9** | 语料建设 | 三层：① `tools/gen_corpus` 用 `moon build --target wasm` 批量产出（源码已知，可算期望值）② 手写 `.wat` 夹具经 npm wabt 汇编（覆盖边角指令）③ 可选公开 prebuilt `.wasm`（记录 URL + 许可证） | ≥40 个模块入库；每个都有 SHA-256 与来源说明 |
@@ -229,9 +229,11 @@ pub(open) trait Host {
 
 > 顺序理由：S1–S3 是纯机械劳动但必须先对；S4–S6 是算法难点，放在有测试保护之后；S7 之后每一步都要 `moon check` 生成物，形成闭环。
 >
-> S4 的一个实测结论直接影响 S6 的范围：**结构化 wasm 只可能产生可归约 CFG**（`br` 只能指向外层标签），20 KB 真实产物 78/78 可归约。所以 Relooper 的不可归约分支在当前输入子集里不会被触发——它仍要写、仍要有合成图单测，但它是**守卫**而非主路径。这条写在 BOUNDARY §1，避免评委误以为 E108 会频繁出现。
+> S4 的一个实测结论直接改变了 S6 的做法：**结构化 wasm 只可能产生可归约 CFG**（`br` 只能指向外层标签，而这正是可归约的定义），20 KB 真实产物 78/78 可归约。原计划是「先按原生嵌套生成，跨层时调 Relooper 兜底」；实测之后改成**只走构造树、不写 Relooper**：wasm 自己就带着 `block`/`loop`/`if` 与 `end` 的嵌套树，图是从这棵树派生的，再从图反推结构属于把已有的信息丢掉再猜回来。唯一树解决不了的是「一条 `br` 同时离开多层」，它用一个 `int brk` 记住要逃到哪一层、逐层 guard 解绕。**被否方案**：无条件 Relooper（把普通 `if` 也变成状态机，代码不可读）、以及「未命中就退回图调度器」——后者在本输入子集里不可达（解码期 `check_label` 已拒绝越界标签），留着就是没人能跑、没人能测的死代码。代价写进 BOUNDARY §3 D3：`E108` 保留在错误码表但没有任何代码路径会返回它，这一点明说，而不是假装有。
 >
 > S5 的一个副产品是 **S4 的真 bug**：`end if2` 后面紧跟 `else if1` 时，两者落在同一个真实下标上。按"进入 else 臂"读，栈是空的；按"刚结束了一个构造"读，栈上是那个构造的结果。S4 的逃逸表只跳一层，于是两条语义不同的流被合并进同一个块，真实产物里 4 个函数因此报"同一块的两个前驱栈形状不同"。修法是给每个位置加一张 `resolve` 表：落在 else 位上的"构造结束"要继续跳到外层 `if` 的结束处，`br` 的目标同样过这张表。这条抓得很值——它是"先做分析、再写生成"顺序的直接回报，如果先写 Relooper，这个 bug 会以"生成的代码在某个分支上算错"的形式出现，而那种 bug 极难定位。
+>
+> S6 遇到的是语言侧的硬约束，不是算法侧的：**MoonBit 没有带标签的 `break`/`continue`**（`'outer : while true` 直接是词法错误，`break 'label` 不存在），而 `block` 的语义就是"跳到它的 `end`"。所以每个 `block` 都落成一次性 `while true { ...; break }`；`loop` 落成真 `while true`；`br_if` 指向最内层 `block` 时仍然只是一个干净 `break`（有测试断言该函数输出里**不出现** `brk = 1`）。三个失败模式都是先撞上再设计的：`match` 分支里 `break` 是否合法（合法，已实测）、tail 位置裸 `while true` 返回类型报错（改成标志位）、`for_blocks_in` 把"扫过界"当成"找到了"导致给每个 `if` 臂都套了一次性循环（分离 `found`/`go` 修掉）。**结构化最难的不是生成，是证明它没漏块**：因此把 `visited == reachable` 做成断言，再把"输出里不许残留 `br`/`br_if`/`br_table`"做成第二道断言——因为"什么都没做"的实现能通过所有只检查"能跑通"的测试。
 >
 > S5 还确认了一个设计判断：**调用结果必须立刻落成临时变量**。原因不是性能而是语义——调用在原位执行，把它的结果当表达式推迟到消费点，等于把调用挪了位置。这类溢出记为 `forced`，与真正的重排隐患（`hazard`）分开统计；真实产物 110 : 1 的比例正说明"被迫的"是常态、"隐患"是少数，但也正因如此，隐患必须单独计数，否则会被淹没在噪声里。
 >
@@ -247,7 +249,7 @@ pub(open) trait Host {
 | `model` | 类型 + 172 条指令定义 | 460 |
 | `decode` | 段解析 + 指令解码 | 740 |
 | `analyze` | CFG + 类型化栈 | 640 |
-| `reloop` | Relooper | 420 |
+| `reloop` | 结构化（实际：`core/struct.mbt`，走构造树而非 Relooper） | 420 → 实测 1,333 |
 | `emit` | prelude + emitter + 命名 | 840 |
 | `fixture` | wasm 二进制生成器 | 220 |
 | `cmd/main` | CLI | 200 |
@@ -301,7 +303,7 @@ pub(open) trait Host {
 
 | 风险 | 概率 | 预案（降级路径） |
 |---|---|---|
-| Relooper 做不完/不可靠 | 中 | 只支持可归约 CFG（覆盖 C 产物 ≈99%），不可归约直接 `E108`，边界里写清 |
+| Relooper 做不完/不可靠 | 已解除 | S6 实测后改为「走构造树、不写 Relooper」：`br` 只能指向外层标签，可归约性由解码期的 `check_label` 保证，20 KB 真实产物 78/78 可归约。不可归约在 BOUNDARY §3 D3 里明写为「不可达，`E108` 保留」 |
 | 生成代码编不过 | 中 | S7 起每步都 `moon check` 生成物；先过简单夹具再上复杂 |
 | MoonBit 对超长函数/深嵌套有限制 | 中 | 基本块函数化 + 按函数拆文件 |
 | 真实语料拿不到（无 C 工具链） | 已解除 | 改用 `moon build --target wasm` 自身 MVP 产物（真实编译器输出，且源码已知）+ 手写 `.wat`（npm wabt 汇编）；公开 prebuilt wasm 仅作可选补充 |
@@ -314,10 +316,10 @@ pub(open) trait Host {
 
 1. **项目名 + 一句话**
 2. **生态缺口**（带数据：3,882 模块全量检索 `decompiler` 0；GitHub `moonbit+decompiler` total_count 0）
-3. **方案与关键技术**（Relooper + L1/L2 两级代码生成 + 差分验证闭环）
+3. **方案与关键技术**（构造树结构化 + `brk` 逐层解绕 + L1/L2 两级代码生成 + 差分验证闭环）
 4. **边界**（MVP 子集 + 8 条语义偏差 + 未完成项）
 5. **验证数据**（6 项指标表）
-6. **开源合规 + AI 使用说明**（Apache-2.0；算法参考 Zakai Relooper 论文与 WebAssembly spec，逐项在 NOTICE 标注）
+6. **开源合规 + AI 使用说明**（Apache-2.0；格式参考 WebAssembly spec，结构化策略为自研，逐项在 NOTICE 标注）
 
 ---
 
@@ -328,7 +330,7 @@ pub(open) trait Host {
 | D1 | S0 + S1（脚手架 + 位读取 + 单测） |
 | D2–D3 | S2 + S3（段解码 + 指令解码 + info 上线） |
 | D4–D5 | S4 + S5（CFG + 类型化栈） |
-| D6 | S6（Relooper） |
+| D6 | S6（结构化：构造树 + `brk`） |
 | D7–D8 | S7（代码生成 + prelude，第一个端到端跑通） |
 | D9 | S8 + S9（差分 harness + 语料） |
 | D10 | S10 + S11（边界文档 + 指标 + 申报书） |

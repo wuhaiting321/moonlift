@@ -2,7 +2,7 @@
 
 This file is normative. If the code and this document disagree, that is a bug in one of them.
 
-Version: 0.1.0 (stage S5). Sections marked *(S10)* are filled in as the corresponding stage lands;
+Version: 0.1.0 (stage S6). Sections marked *(S10)* are filled in as the corresponding stage lands;
 what is written below is already true of the shipped code.
 
 ---
@@ -22,14 +22,15 @@ what is written below is already true of the shipped code.
 | Tables | any number, `funcref` only | `externref` tables | `E101` |
 | Imports | function imports only (S3 onward, surfaced as a `Host` trait whose default method traps) | memory/table/global imports | `E107` |
 | Data / element segments | active, table/memory 0, i32 constant offset | passive segments, element expressions | `E109` |
-| Control flow | reducible CFGs — and every CFG structured wasm can express is reducible; measured 0 irreducible in 78 bodies | irreducible CFGs (reachable only through a hand-built graph, not through wasm) | `E108` |
+| Control flow | reducible CFGs — guaranteed by the decoder's label-depth check, not by luck; measured 0 irreducible in 78 bodies | a `br` / `br_if` / `br_table` depth beyond the enclosing labels; irreducible CFGs are unreachable from this subset (`E108` reserved, see §3 D3) | `E008`, `E108` |
 | Typing | every body the spec validates: operand types, block results, branch payloads, function result | a body that does not type-check (only reachable from a hand-patched or non-conforming producer) | `E011` |
 | Multi-value | recognised (type-index block types, signatures with several results) and reported by `info` | *generated*: a block typed by index, or a call returning several values | `E112` |
 
 **Status.** Everything down to "instructions with an unknown operand length" is implemented and
 tested (S2 = container, S3 = instruction decoder + `disasm`, S4 = control-flow graph, S5 = typed
-stack simulation and type checking). Control-flow *structuring* and code generation are contracts
-for S6–S7.
+stack simulation and type checking, S6 = structuring back to `while` / `if` / `match`). Code
+generation of MoonBit source is the contract for S7; the deviations that structuring introduces are
+listed in §3, which is now populated.
 
 **Instruction-level rule: a wrong *length* stops, a wrong *value* is reported.** An opcode whose
 operand size we do not know (`0xFD` SIMD, `0xFE` atomics) cannot be skipped, because guessing would
@@ -60,9 +61,20 @@ and the marker is what makes the reason visible (`disasm --cfg` prints `(unreach
 **Reducibility is a guard, and it is honest about never firing.** Structured wasm branches only to
 labels of enclosing constructs, so every CFG it can express is reducible; the Hecht–Ullman test in
 `core/cfg.mbt` therefore returns "reducible" for all 78 complete bodies of the real MoonBit artifact
-and for every fixture. The analysis exists because the Relooper needs to *know* that, and because a
-false positive would be a structuring bug that no test would otherwise catch. It is tested on
-hand-written successor matrices, since a wasm fixture cannot produce the input.
+and for every fixture. The analysis exists because the structurer must be able to *state* that
+precondition (a `br` whose target is not an enclosing construct would mean the input is malformed,
+and an unreducible graph is refused with `E108` rather than approximated), and because a false
+positive would be a structuring bug that no test would otherwise catch. It is tested on hand-written
+successor matrices, since a wasm fixture cannot produce the input.
+
+**Structuring contract.** The structurer walks the input's own construct tree — wasm's `block` /
+`loop` / `if` with their `end`s — instead of re-deriving nesting from the flat graph, because that
+tree is information the format never lost. Two properties are asserted rather than assumed:
+**every reachable block is emitted exactly once** (`blocks emitted N of N` in `--struct-stats`, and a
+per-function `visited == reachable` test), and **no `br` / `br_if` / `br_table` / bare `if (...)`
+statement survives into the output** — a structurer whose fallback is "leave the graph as it was"
+would otherwise pass every test while doing nothing. Both are checked on all nine fixtures and on the
+real artifact.
 
 **Typed stack contract.** Each block is simulated once, in block-index order, which is a topological
 order of the forward edges (a loop's back edge points at a lower index). A block's entry is the exit
@@ -130,14 +142,120 @@ in. `E004` on a section size points at the LEB128 byte, not at the section id.
 
 ## 3. Control-flow deviations *(S10)*
 
-Populated during S6/S7. Each entry will state: deviation, reason, observable impact, and whether it
-is acceptable for the declared subset. `E108` is reserved for the one case that is *not* acceptable
-and is refused rather than approximated.
+Populated during S6/S7. Each entry states: deviation, reason, observable impact, and whether it is
+acceptable for the declared subset. `E108` is reserved for the one case that is *not* acceptable and
+is refused rather than approximated.
+
+### D1 · Every `block` becomes a one-shot `while true`, not a labelled scope
+
+**Deviation.** wasm's `block` is a scope with a label; MoonBit has no labelled blocks and no labelled
+`break`. A `block` is therefore emitted as `while true { ...; break }` — a loop that runs at most
+once — so that a jump to its `end` has a `break` to land on.
+
+**Reason.** Measured, not assumed: a labelled loop is a lexing error in MoonBit
+(`'outer : while true {...}` → `unrecognized character "'"`, U+0027), and `break` closes the
+*innermost* loop only. There is no other way to express "jump to the end of this scope".
+
+**Impact.** One extra level of nesting per `block`, and `continue` is legal where the original had no
+loop — a construct that must not use it (`cont_of` in `core/struct.mbt` returns `-1` for a `block`,
+so the renderer never emits `continue` there). Cost measured on the real artifact: 32 guard
+constructs, maximum nesting depth 7.
+
+### D2 · A branch that leaves several constructs needs one variable, `brk`
+
+**Deviation.** A `br 3` that leaves four nested constructs cannot be one `break`. The output carries a
+single `int` — `brk` — holding the construct being escaped (`-1` for none). The branch writes
+`brk = n; break`, and each guard on the way out either clears it, passes it one level further out, or
+turns it into a `continue` if it names the enclosing loop.
+
+**Reason.** Without it, the only alternative is a per-function state machine with a dispatch loop and
+one block per case, which is what an unconditional Relooper produces and which makes even a plain
+`if` unreadable.
+
+**Impact.** `brk` is dead weight in the emitted function signature (S7 will keep it as a local,
+never as a parameter) and it is the one piece of state a reader has to hold in their head. It is kept
+to the minimum: a direct `br 0` out of a `loop` is still a plain `continue`, a `br_if` to the
+innermost `block` is still a plain `break` (verified by a test that asserts `brk = 1` is *absent* from
+that function's output), and `switches 0` in `--struct-stats` shows the real artifact needed no
+`match` at all.
+
+### D3 · There is no Relooper, and no graph dispatcher either
+
+**Deviation.** This build has no Relooper. The structurer never sees an arbitrary graph: it walks the
+construct tree the input already carries (`block` / `loop` / `if` with their `end`s). `E108` exists in
+the taxonomy and the Hecht–Ullman test exists in `core/cfg.mbt`, but the test's only job is to state a
+precondition — no code path returns `E108`.
+
+**Reason.** Irreducibility is impossible for this input, and the guarantee comes from the *decoder*,
+not from luck: `check_label` rejects a `br` / `br_if` / `br_table` depth that exceeds the enclosing
+label stack (`E008`), so every branch names a construct it is nested inside — which is the definition
+of a reducible graph. Measured: 78 of 78 complete bodies in the real artifact are reducible, 0
+irreducible, and the same holds for every fixture. A dispatcher would therefore be code that no
+producer in the subset can reach and no test can exercise; shipping it would be worse for a reviewer
+than saying plainly that it is absent.
+
+**Impact.** If a producer is ever found that violates this — which would require it to emit a binary
+this decoder rejects — the failure is a rejection at decode time, not a structurer emitting a body
+that computes something else. The claim is guarded in `script/check.sh` (`no body may come out
+irreducible`) and the reducibility analysis itself is tested on hand-written successor matrices,
+including the classic Hecht–Ullman two-entries-into-a-cycle example.
+
+### D4 · A `br` that leaves the function is printed as `return`
+
+**Deviation.** `br` to the outermost label and `return` are the same instruction at run time; the
+first is emitted as a `return`, not as a branch to a nonexistent label.
+
+**Reason.** There is no enclosing label to jump to once the outermost construct is left.
+
+**Impact.** None observable — the two are byte-for-byte equivalent at run time. They stay distinct in
+the IR (`SReturn` vs `SBr`) so the loss of information is visible rather than silent, and every leaf
+is labelled with the block index it came from (`;; b7`), so a `return` printed at the end of a leaf
+stays attributable to the block that produced it.
+
+### D5 · An `if` arm gets a one-shot loop only when something branches to that `if`
+
+**Deviation.** A `br` that targets an `if` must skip the rest of the arm, and the arm has no loop of
+its own. Arms are therefore wrapped in `while true { ... }` **per arm**, and only when a branch
+inside that arm actually targets this `if`.
+
+**Reason.** Wrapping unconditionally would put `while true` around every arm of every `if`, which is
+the noise that makes Relooper output unreadable. The condition is decidable from the construct tree,
+so it is decided exactly.
+
+**Impact.** None on semantics; strictly less noise. `corpus/good/control.wasm` exercises both cases
+(`$guard` has no wrap, `$find_limit` wraps one arm).
+
+### D6 · Multi-value and `call_indirect` bodies are refused per function — `E111`, `E112`
+
+**Deviation.** A body is emitted as a whole or refused as a whole. MoonBit functions return one
+value, and there is no way to reproduce a table dispatch from recovered source, so 6 of 79 bodies in
+the real artifact are refused by name instead of approximated.
+
+**Reason.** A decompiler that produces a *compiling* function computing the wrong value is worse than
+one that names the function it cannot translate.
+
+**Impact.** Each refusal is reported with its function index, its name, the byte offset and the code
+(`--struct-stats` lists all six). The remaining 72 bodies are complete; nothing is silently dropped —
+`structured + skipped + refused` is asserted to equal the function count in `script/check.sh`.
+
+### D7 · Dead code after an unconditional transfer stays dead, and is still emitted
+
+**Deviation.** `continue` / `break` / `brk = n; break` do not suppress the statements the structurer
+placed after them, so a loop whose body ends in a back edge still carries an unreachable tail guard.
+
+**Reason.** Suppressing it would require a reachability pass over the emitted tree that buys nothing:
+the guard is two lines and the alternative is a second analysis whose bugs would be invisible.
+
+**Impact.** Cosmetic only — the extra `if (brk != n) { break }` after a `continue` is unreachable and
+MoonBit does not reject unreachable statements. It is visible in `$sum_to` of
+`corpus/good/control.wasm`; a reader can confirm unreachability by the `continue` immediately above.
 
 ## 4. Known limitations at 0.1.0
 
-1. **No decompilation yet.** `decompile` and `verify` print "not implemented" and exit 2. `info` and
-   `disasm` are fully implemented.
+1. **No MoonBit source is generated yet.** `decompile` and `verify` print "not implemented" and exit
+   2. `info`, `disasm` (including `--cfg`, `--stack` and `--struct`) are fully implemented; `--struct`
+   prints pseudo-code shaped like MoonBit but is not written to disk and not compiled. S7 turns the
+   tree in `core/struct.mbt` into `.mbt` source and `moon check`s it.
 2. **native backend unverified.** This machine has no MSVC and `--target llvm` requires a nightly
    toolchain (`missing prelude.mi`). Verification therefore runs on `wasm`, `wasm-gc` and `js`.
    Installing VS Build Tools makes native available; it does not change any correctness criterion,
@@ -158,8 +276,8 @@ and is refused rather than approximated.
    `b"\x03abc"` decodes to `"扡"`. `core/utf8.mbt` contains a real decoder; do not "simplify" it away.
 8. **MoonBit's own wasm output is not in the MVP subset.** It emits a `datacount` section,
    multi-value signatures, `v128` locals in its memcpy helper, and bulk-memory/SIMD instructions.
-   `info` parses the first three (they are structural); the instruction decoder reads 3,878 of its
-   3,940 instructions and stops at the SIMD prefix in `..._blit__from__string__simd`.
+   `info` parses the first three (they are structural); the instruction decoder reads 4,423 of its
+   4,485 instructions and stops at the SIMD prefix in `..._blit__from__string__simd`.
    `moonbit_fib.wasm` in `corpus/good/` is the evidence, and `moonlift disasm --stats` prints it.
 9. **Alignment hints are validated, not ignored.** An `align=` exponent larger than the natural
    alignment of the access is a spec violation; it is rejected with `E007` rather than carried into
@@ -174,10 +292,11 @@ and is refused rather than approximated.
     accepted here and rejected by a full validator.
 11. **Loops are identified at block granularity.** When two nested loops share a header block (their
     first instruction is the same, which happens when the inner loop opens immediately), the analysis
-    reports one loop, not two: a block is the smallest unit, and both headers *are* that block. This
-    does not affect correctness of the emitted code — the Relooper works on blocks — but it means
-    "loops: 20" is a count of distinct block headers, not of `loop` keywords in the source. The
-    alternative (per-instruction loop identity) would add a second, finer graph that nothing consumes.
+   reports one loop, not two: a block is the smallest unit, and both headers *are* that block. This
+   does not affect correctness of the emitted code — the structurer works on constructs, which are
+   per-instruction, not on blocks — but it means "loops: 20" is a count of distinct block headers,
+   not of `loop` keywords in the source. The alternative (per-instruction loop identity) would add a
+   second, finer graph that nothing consumes.
 12. **Dead code is analysed, not executed.** A block reachable only through a branch that no path
     takes is still walked by the dominator and loop passes; what marks it is the DFS from the entry,
     not a separate liveness analysis. Blocks after `unreachable` are the common case.
@@ -202,12 +321,14 @@ bash script/check.sh
 
 Every number quoted in the README or in the submission form must be reproducible by a command in
 `script/`; otherwise it does not belong in the document. The script currently verifies: formatting,
-three-target `moon check`, 124 unit tests on two targets, CLI usage paths, 9 fixtures decoded,
+three-target `moon check`, 131 unit tests on two targets, CLI usage paths, 9 fixtures decoded,
 19 malformed fixtures rejected with code + offset (8 of them at the instruction layer, each
 reporting the code written in its filename — including one that decodes but does not type-check),
-byte-identical `info`, `disasm --ops`, `disasm --cfg` **and** `disasm --stack` output across
-`wasm-gc`, `js` and `wasm`, a graph for every fixture with no body coming out irreducible, the
-pinned recovery counts of the real artifact (72 of 79 analysed, 6 refused, 1 skipped, 0 rejected,
-111 spills of which 1 is a reordering hazard), both reordering hazards on the fixture that isolates
-them, and a cross-check of every decoded mnemonic against wabt
-(`4,386 matched, 0 mismatched, 62 not attempted`).
+byte-identical `info`, `disasm --ops`, `disasm --cfg`, `disasm --stack` **and** `disasm --struct`
+output across `wasm-gc`, `js` and `wasm`, a graph for every fixture with no body coming out
+irreducible, the pinned recovery counts of the real artifact (72 of 79 analysed, 6 refused, 1
+skipped, 0 rejected, 111 spills of which 1 is a reordering hazard), both reordering hazards on the
+fixture that isolates them, the structurer on every fixture (no raw `br` / `br_if` / `br_table` /
+`if (...)` may survive; `blocks emitted 395 of 395`; `nodes 1012`, `guards 32`, `switches 0`, `max
+depth 7`; and `structured + skipped + refused` must equal the function count), and a cross-check of
+every decoded mnemonic against wabt (`4,423 matched, 0 mismatched, 62 not attempted`).

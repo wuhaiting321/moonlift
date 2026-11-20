@@ -128,8 +128,8 @@ fn run_info(args : Array[String]) -> Int32 {
 }
 
 ///|
-/// `disasm <file> [--ops|--stats|--cfg|--stack]`: decode every function body and
-/// print it.
+/// `disasm <file> [--ops|--stats|--cfg|--stack|--struct|--struct-stats]`: decode
+/// every function body and print it.
 ///
 /// Unlike `info`, this can fail on a body the decoder rejects, and that is the
 /// point: `info` answers "what is in this file", `disasm` answers "what does the
@@ -140,9 +140,10 @@ fn run_disasm(args : Array[String]) -> Int32 {
     return EXIT_USAGE
   }
   let path = args[1]
-  // 0 listing, 1 ops, 2 stats, 3 control-flow graph, 4 typed stack. Last flag
-  // wins, so `--stats --cfg` is the same as `--cfg` rather than an error: a
-  // reviewer pasting flags should not have to think about ordering.
+  // 0 listing, 1 ops, 2 stats, 3 control-flow graph, 4 typed stack, 5
+  // structured tree, 6 structuring statistics. Last flag wins, so `--stats
+  // --cfg` is the same as `--cfg` rather than an error: a reviewer pasting flags
+  // should not have to think about ordering.
   let mut mode = 0
   let mut i = 2
   while i < args.length() {
@@ -154,6 +155,10 @@ fn run_disasm(args : Array[String]) -> Int32 {
       mode = 3
     } else if args[i] == "--stack" {
       mode = 4
+    } else if args[i] == "--struct" {
+      mode = 5
+    } else if args[i] == "--struct-stats" {
+      mode = 6
     }
     i = i + 1
   }
@@ -178,6 +183,10 @@ fn run_disasm(args : Array[String]) -> Int32 {
             @core.cfg_text_result(m, path)
           } else if mode == 4 {
             @core.stack_text_result(m, path)
+          } else if mode == 5 {
+            @core.tree_text_result(m, path)
+          } else if mode == 6 {
+            @core.struct_summary_text(m)
           } else {
             @core.disasm_text(m, path)
           }

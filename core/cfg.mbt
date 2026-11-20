@@ -14,9 +14,10 @@
 ///    edge; the loop it closes is the set of blocks that reach the source
 ///    without passing through the target.
 /// 4. **Reducibility.** A flow graph is reducible when every retreating edge of
-///    a DFS spanning tree is a back edge (Hecht–Ullman). Irreducible graphs need
-///    the Relooper's dispatcher; reducible ones do not, and can be emitted as
-///    nested `if` / `while`.
+///    a DFS spanning tree is a back edge (Hecht–Ullman). A reducible graph can be
+///    emitted as nested `if` / `while`; an irreducible one has no structured form
+///    at all, which is why the structurer states reducibility as a precondition
+///    (BOUNDARY.md §3 D3).
 ///
 /// Why bother, when wasm control flow is already structured? The *nesting* is a
 /// tree, but the graph is not: `br 2` leaves two regions at once, an `if` has
@@ -573,7 +574,8 @@ fn analyze_graph(nb : Int32, succ : Array[Array[Int32]]) -> Graph {
   // Hecht–Ullman: the graph is reducible iff every retreating edge of the DFS
   // tree is a back edge. A retreating edge that is *not* a back edge means two
   // paths into a cycle, which is exactly the shape structured control flow
-  // cannot express — and the shape the Relooper's dispatcher exists for.
+  // cannot express. The structurer therefore refuses such a graph rather than
+  // approximating it; for this input subset the decoder has already ruled it out.
   let bad_from : Array[Int32] = []
   let bad_to : Array[Int32] = []
   i = 0

@@ -258,6 +258,59 @@ else
   printf 'FAIL tee must not spill\n'; fail=1
 fi
 
+step "struct: every body structures, and no raw branch statement survives"
+# A structurer that silently gives up looks exactly like a good one unless the
+# output is inspected: the fallback is to leave `br 1 ()` in place verbatim.
+# Every branch must become `break` / `continue` / `brk = n; break`, and every
+# `if (...)` block statement must become a real `if (...) { ... }`.
+for f in corpus/good/*.wasm; do
+  if ! out=$(cli disasm "$f" --struct); then
+    printf 'FAIL %s does not structure\n' "$f"; fail=1
+  elif [ -z "$out" ]; then
+    printf 'FAIL %s structures to nothing\n' "$f"; fail=1
+  else
+    n=$(printf '%s' "$out" | grep -cE '^[[:space:]]*(br|br_if|br_table)([[:space:](]|$)|^[[:space:]]*if \(.*\)[[:space:]]*$')
+    if [ "$n" -eq 0 ]; then
+      printf 'ok   %s: no raw branch statement left\n' "$f"
+    else
+      printf 'FAIL %s: %s raw branch statement(s) left\n' "$f" "$n"; fail=1
+    fi
+  fi
+done
+
+step "struct: block coverage, and the pinned real-artifact counts"
+# `blocks emitted N of N` is the structurer's own invariant: every reachable
+# block is lowered exactly once. The other numbers are pinned so that a change
+# in the tree walk shows up here as a diff rather than as a silent regression.
+out=$(cli disasm corpus/good/moonbit_fib.wasm --struct-stats)
+while IFS='|' read -r label want; do
+  [ -z "$label" ] && continue
+  got=$(printf '%s' "$out" | grep -E "^$label" | sed -E 's/^[a-z ]+ +//; s/ +$//')
+  if [ "$got" = "$want" ]; then
+    printf 'ok   %s = %s\n' "$label" "$want"
+  else
+    printf 'FAIL %s is [%s], expected [%s]\n' "$label" "$got" "$want"; fail=1
+  fi
+done <<'EOF'
+structured|72 of 79 bodies
+nodes|1012
+blocks emitted|395 of 395
+guards|32
+switches|0
+max depth|7
+skipped|1
+refused|6
+EOF
+# The two counts must add up: a body that is neither structured nor accounted
+# for has been dropped somewhere.
+a=$(printf '%s' "$out" | grep -E '^structured' | sed -E 's/[^0-9]+/ /g' | awk '{print $1}')
+b=$(printf '%s' "$out" | grep -E '^(skipped|refused)' | awk '{s += $2} END {print s + 0}')
+if [ "$((a + b))" -eq 79 ]; then
+  printf 'ok   structured %s + skipped/refused %s = 79 bodies\n' "$a" "$b"
+else
+  printf 'FAIL %s structured + %s skipped/refused != 79 bodies\n' "$a" "$b"; fail=1
+fi
+
 step "cross-target: same fixture, three backends, identical report"
 for f in corpus/good/fib.wasm corpus/good/globals.wasm corpus/good/moonbit_fib.wasm; do
   a=$(moon run cmd/main --target wasm-gc -- info "$f" 2>/dev/null)
@@ -308,6 +361,19 @@ for f in corpus/good/control.wasm corpus/good/stack.wasm corpus/good/moonbit_fib
     printf 'ok   %s recovers identically on wasm-gc / js / wasm\n' "$f"
   else
     printf 'FAIL %s expressions differ across backends\n' "$f"
+    fail=1
+  fi
+done
+
+step "cross-target: identical structured control flow"
+for f in corpus/good/control.wasm corpus/good/stack.wasm corpus/good/moonbit_fib.wasm; do
+  a=$(moon run cmd/main --target wasm-gc -- disasm "$f" --struct 2>/dev/null)
+  b=$(moon run cmd/main --target js -- disasm "$f" --struct 2>/dev/null)
+  c=$(moon run cmd/main --target wasm -- disasm "$f" --struct 2>/dev/null)
+  if [ "$a" = "$b" ] && [ "$a" = "$c" ] && [ -n "$a" ]; then
+    printf 'ok   %s structures identically on wasm-gc / js / wasm\n' "$f"
+  else
+    printf 'FAIL %s structured control flow differs across backends\n' "$f"
     fail=1
   fi
 done
