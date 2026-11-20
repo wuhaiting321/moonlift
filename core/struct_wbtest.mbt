@@ -164,3 +164,46 @@ test "struct: every reachable block is emitted exactly once" {
     assert_eq(coverage_of(c), "ok")
   }
 }
+
+// --- a value that crosses a block boundary --------------------------------
+//
+//   (module (func (param i32) (result i32)
+//     local.get 0
+//     block (result i32) local.get 0 i32.const 1 i32.add end
+//     i32.add))
+
+///|
+test "struct: a block's entry value is written down at the edge" {
+  let text = tree_of(
+    b"\x00\x61\x73\x6d\x01\x00\x00\x00\x01\x06\x01\x60\x01\x7f\x01\x7f\x03\x02\x01\x00\x0a\x0f\x01\x0d\x00\x20\x00\x02\x7f\x20\x00\x41\x01\x6a\x0b\x6a\x0b",
+  )
+  // `local 0` is pushed before the block opens, so it has to survive the block
+  // and be consumed after it: that is a value crossing an edge, and it needs a
+  // name. A structured tree has no parameters, so the name is a temp.
+  assert_true(text.contains("t2 = local 0"))
+  // The block's own result is handed on the same way, at the `end`.
+  assert_true(text.contains("i32.add(local 0, i32.const 1)"))
+  // The one thing that must never happen: a block parameter left unbound. The
+  // name `in0` is how the analysis spells it, and it has no binding in a tree.
+  assert_false(text.contains("in0"))
+  assert_false(text.contains("in1"))
+}
+
+// --- a loop with a result, inside a block with a result --------------------
+//
+//   (module (func (param i32) (result i32) (local i32)
+//     block (result i32)
+//       loop (result i32) ... br 1 end
+//     end))
+
+///|
+test "struct: values cross a loop edge and a block edge in one body" {
+  let bytes = b"\x00\x61\x73\x6d\x01\x00\x00\x00\x01\x06\x01\x60\x01\x7f\x01\x7f\x03\x02\x01\x00\x0a\x24\x01\x22\x01\x01\x7f\x02\x7f\x03\x7f\x20\x01\x41\x01\x6a\x22\x01\x20\x00\x48\x04\x7f\x20\x01\x05\x41\x09\x0b\x21\x01\x20\x01\x0c\x01\x0b\x0b\x0b"
+  let text = tree_of(bytes)
+  assert_false(text.contains("in0"))
+  assert_false(text.contains("in1"))
+  // The `br 1` leaves both the loop and the block, and the value it carries is
+  // the block's result — so it is assigned on the way out, not at the use site.
+  assert_true(text.contains("t"))
+  assert_eq(coverage_of(bytes), "ok")
+}

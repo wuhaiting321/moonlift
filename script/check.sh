@@ -293,7 +293,7 @@ while IFS='|' read -r label want; do
   fi
 done <<'EOF'
 structured|72 of 79 bodies
-nodes|1012
+nodes|1109
 blocks emitted|395 of 395
 guards|32
 switches|0

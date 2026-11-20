@@ -112,6 +112,16 @@ pub enum Node {
   /// is the code generator's business. Keeping the two apart is what lets a
   /// block's statements be printed without knowing who receives them.
   NEdge(Int32, Int32)
+  /// `t7 = e` — a value handed across an edge, written down at the edge.
+  ///
+  /// A block's entry values are stack slots that arrive from whichever
+  /// predecessor ran, i.e. they are parameters. In a tree they cannot *be*
+  /// parameters (there is no call), so each slot becomes a local that the
+  /// predecessor writes and the successor reads. The write has to happen where
+  /// the value is still correct — at the end of the predecessor, after its last
+  /// statement — which is why this node lives next to the transfer and not at
+  /// the top of the block that consumes it.
+  NAssign(Int32, Expr)
   /// A note for the reader. Emitted where code was dropped, so that dropping it
   /// is visible rather than silent.
   NComment(String)
@@ -203,6 +213,9 @@ priv struct Ctx {
   /// Blocks emitted so far. A structured function must end with
   /// `visited == reach`; anything else means code was dropped or duplicated.
   mut visited : Int32
+  /// Slots reserved per block for entry values, so that block `b` slot `k` has a
+  /// name of its own no matter how many other blocks are live at the same time.
+  stride : Int32
 }
 
 ///|
@@ -240,7 +253,83 @@ fn new_ctx(l : Layout, g : Cfg, fs : FuncStack) -> Ctx {
     }
     b = b + 1
   }
-  { l, g, fs, xf, first_at, block_at, cons, reach, visited: 0, }
+  // Entry widths decide the naming scheme: block `b` slot `k` is temp
+  // `fs.temps + b * stride + k`. A shared counter would collide, because a block
+  // nested inside another block is live at the same time as its host.
+  let mut stride = 1
+  b = 0
+  while b < nb {
+    let w = fs.blocks[b].entry.length()
+    if w > stride {
+      stride = w
+    }
+    b = b + 1
+  }
+  { l, g, fs, xf, first_at, block_at, cons, reach, visited: 0, stride, }
+}
+
+///|
+/// The temp holding block `b`'s `k`-th entry value.
+fn in_temp(ctx : Ctx, b : Int32, k : Int32) -> Int32 {
+  ctx.fs.temps + b * ctx.stride + k
+}
+
+///|
+/// Replace `in0`-style references to a block's own parameters with the temps
+/// that carry them.
+///
+/// The substitution happens when the tree is built, not when it is printed: a
+/// block's statements and its exit values are the only places its parameters can
+/// appear, and both are produced by `split_block`, which knows the block.
+fn subst(ctx : Ctx, b : Int32, e : Expr) -> Expr {
+  match e {
+    EParam(k) => ETemp(in_temp(ctx, b, k))
+    EConst(_) | ELocal(_) | EGlobal(_) | ETemp(_) | EMemorySize => e
+    ELoad(op, a) => ELoad(op, subst(ctx, b, a))
+    EBin(t, k, x, y) => EBin(t, k, subst(ctx, b, x), subst(ctx, b, y))
+    EUn(t, k, x) => EUn(t, k, subst(ctx, b, x))
+    EConv(f, t, m, x) => EConv(f, t, m, subst(ctx, b, x))
+    ECall(f, args) => ECall(f, subst_list(ctx, b, args))
+    ESelect(x, y, z) =>
+      ESelect(subst(ctx, b, x), subst(ctx, b, y), subst(ctx, b, z))
+    EMemoryGrow(x) => EMemoryGrow(subst(ctx, b, x))
+  }
+}
+
+///|
+fn subst_list(ctx : Ctx, b : Int32, xs : Array[Expr]) -> Array[Expr] {
+  let out : Array[Expr] = []
+  for x in xs {
+    out.push(subst(ctx, b, x))
+  }
+  out
+}
+
+///|
+fn subst_stmt(ctx : Ctx, b : Int32, s : Stmt) -> Stmt {
+  match s {
+    SLocal(i, e) => SLocal(i, subst(ctx, b, e))
+    SGlobal(i, e) => SGlobal(i, subst(ctx, b, e))
+    STemp(t, e) => STemp(t, subst(ctx, b, e))
+    SStore(op, a, v) => SStore(op, subst(ctx, b, a), subst(ctx, b, v))
+    SEval(e) => SEval(subst(ctx, b, e))
+    SIf(e) => SIf(subst(ctx, b, e))
+    SBr(d, vs) => SBr(d, subst_list(ctx, b, vs))
+    SBrIf(d, vs, c) => SBrIf(d, subst_list(ctx, b, vs), subst(ctx, b, c))
+    SBrTable(ls, d, vs, c) =>
+      SBrTable(ls, d, subst_list(ctx, b, vs), subst(ctx, b, c))
+    SReturn(vs) => SReturn(subst_list(ctx, b, vs))
+    SUnreachable => s
+  }
+}
+
+///|
+fn subst_stmts(ctx : Ctx, b : Int32, xs : Array[Stmt]) -> Array[Stmt] {
+  let out : Array[Stmt] = []
+  for x in xs {
+    out.push(subst_stmt(ctx, b, x))
+  }
+  out
 }
 
 // --- resolving a terminator ----------------------------------------------
@@ -485,10 +574,19 @@ fn succ_block(ctx : Ctx, t : Int32) -> Int32 {
 /// only when the target has an entry. That keeps the tree readable without
 /// hiding anything: an edge that carries nothing has nothing to show.
 fn push_edges(ctx : Ctx, out : Array[Node], from : Int32, to : Int32) -> Unit {
-  if to >= 0 &&
-    to < ctx.fs.blocks.length() &&
-    ctx.fs.blocks[to].entry.length() > 0 {
-    out.push(NEdge(from, to))
+  if to < 0 || to >= ctx.fs.blocks.length() {
+    return
+  }
+  let n = ctx.fs.blocks[to].entry.length()
+  if n == 0 {
+    return
+  }
+  out.push(NEdge(from, to))
+  let vals = ctx.fs.blocks[from].exit_exprs
+  let mut k = 0
+  while k < n && k < vals.length() {
+    out.push(NAssign(in_temp(ctx, to, k), subst(ctx, from, vals[k])))
+    k = k + 1
   }
 }
 
@@ -515,7 +613,7 @@ fn with_edge(
 /// (which needs the condition) while a branch is emitted where the block is.
 fn split_block(ctx : Ctx, b : Int32) -> (Array[Stmt], Array[Node]) {
   let blk = ctx.g.blocks[b]
-  let stmts = ctx.fs.blocks[b].stmts
+  let stmts = subst_stmts(ctx, b, ctx.fs.blocks[b].stmts)
   let x = ctx.xf[b]
   if x.kind == x_none {
     // A block that falls into the exit block is falling off the end of the
@@ -524,7 +622,7 @@ fn split_block(ctx : Ctx, b : Int32) -> (Array[Stmt], Array[Node]) {
     // this is the only point where the expressions that produced them are still
     // in scope.
     if blk.succ.length() > 0 && blk.succ[0] == ctx.g.exit {
-      return (stmts, [NReturn(ctx.fs.blocks[b].exit_exprs)])
+      return (stmts, [NReturn(subst_list(ctx, b, ctx.fs.blocks[b].exit_exprs))])
     }
     let out : Array[Node] = []
     if blk.succ.length() > 0 {
@@ -589,6 +687,16 @@ fn xfer_nodes(ctx : Ctx, b : Int32, x : Xfer) -> Array[Node] {
   let at = ctx.g.blocks[b].end - 1
   let blk = ctx.g.blocks[b]
   let out : Array[Node] = []
+  // Branch payloads are values of *this* block, so their parameters are this
+  // block's too.
+  let x = {
+    let y = x
+    let vals = subst_list(ctx, b, y.vals)
+    match y.cond {
+      Some(c) => { ..y, vals, cond: Some(subst(ctx, b, c)), }
+      None => { ..y, vals, }
+    }
+  }
   if x.kind == x_to || x.kind == x_cont || x.kind == x_brk {
     let tr = transfer_node(ctx, at, x.target, x.vals)
     match x.cond {
@@ -1142,6 +1250,7 @@ pub fn Node::render(self : Node, m : Module, level : Int32) -> String {
       b.write_string("\{pad}  else { break }\n\{pad}}\n")
     }
     NEdge(from, to) => b.write_string("\{pad};; edge b\{from} -> b\{to}\n")
+    NAssign(t, e) => b.write_string("\{pad}t\{t} = \{e.render(m)}\n")
     NBrkReset => b.write_string("\{pad}brk = -1\n")
     NComment(s) => b.write_string("\{pad};; \{s}\n")
   }
