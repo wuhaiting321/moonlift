@@ -102,6 +102,56 @@ for f in corpus/bad/*.wasm; do
 done
 printf 'ok   %d malformed fixtures rejected\n' "$bad"
 
+step "corpus: code-layer corruption is caught with the code in the filename"
+# Two claims per file, and both matter: `info` must still accept the container
+# (the layers are independent), and `disasm` must reject the body with exactly
+# the expected code.
+for f in corpus/badcode/*.wasm; do
+  want=$(basename "$f" | sed -E 's/.*_([eE][0-9]{3})\.wasm/\1/' | tr 'a-z' 'A-Z')
+  got=$(cli disasm "$f" | grep -oE 'E[0-9]{3} at byte [0-9]+' | head -1)
+  case "$got" in
+    "$want at byte "*) printf 'ok   %s -> %s\n' "$(basename "$f")" "$got" ;;
+    *) printf 'FAIL %s expected %s, got %s\n' "$(basename "$f")" "$want" "${got:-nothing}"; fail=1 ;;
+  esac
+  if cli info "$f" >/dev/null; then :; else
+    printf 'FAIL %s: info should still describe the container\n' "$(basename "$f")"; fail=1
+  fi
+done
+
+step "corpus: every body decodes, and only SIMD stops early"
+# Expected partial bodies: exactly one, in the real compiler artifact, at a
+# function whose name ends in `simd`. Anything else is a decoder regression.
+stats=$(cli disasm corpus/good/moonbit_fib.wasm --stats)
+if printf '%s' "$stats" | grep -q '^partial bodies  1$'; then
+  printf 'ok   moonbit_fib: 1 partial body\n'
+else
+  printf 'FAIL moonbit_fib: expected exactly 1 partial body\n'
+  printf '%s\n' "$stats" | head -6
+  fail=1
+fi
+if printf '%s' "$stats" | grep -q 'simd'; then
+  printf 'ok   the partial body is the SIMD helper\n'
+else
+  printf 'FAIL partial body is not the SIMD helper\n'; fail=1
+fi
+for f in corpus/good/*.wasm; do
+  if cli disasm "$f" >/dev/null; then :; else printf 'FAIL %s does not disassemble\n' "$f"; fail=1; fi
+done
+printf 'ok   all good fixtures disassemble\n'
+
+step "decoder vs wabt (independent implementation)"
+if node corpus/tools/verify_decode.js > /tmp/moonlift_verify.log 2>&1; then
+  printf 'ok   %s\n' "$(grep -E '^(matched|not attempted)' /tmp/moonlift_verify.log | tr '\n' ' ')"
+else
+  if grep -q '^SKIP' /tmp/moonlift_verify.log; then
+    printf 'ok   skipped (wabt not installed: npm --prefix corpus/tools i wabt)\n'
+  else
+    printf 'FAIL decoder disagrees with wabt\n'
+    tail -12 /tmp/moonlift_verify.log
+    fail=1
+  fi
+fi
+
 step "cross-target: same fixture, three backends, identical report"
 for f in corpus/good/fib.wasm corpus/good/globals.wasm corpus/good/moonbit_fib.wasm; do
   a=$(moon run cmd/main --target wasm-gc -- info "$f" 2>/dev/null)
@@ -111,6 +161,19 @@ for f in corpus/good/fib.wasm corpus/good/globals.wasm corpus/good/moonbit_fib.w
     printf 'ok   %s identical on wasm-gc / js / wasm\n' "$f"
   else
     printf 'FAIL %s differs across backends\n' "$f"
+    fail=1
+  fi
+done
+
+step "cross-target: identical instruction stream"
+for f in corpus/good/arith.wasm corpus/good/control.wasm corpus/good/moonbit_fib.wasm; do
+  a=$(moon run cmd/main --target wasm-gc -- disasm "$f" --ops 2>/dev/null)
+  b=$(moon run cmd/main --target js -- disasm "$f" --ops 2>/dev/null)
+  c=$(moon run cmd/main --target wasm -- disasm "$f" --ops 2>/dev/null)
+  if [ "$a" = "$b" ] && [ "$a" = "$c" ] && [ -n "$a" ]; then
+    printf 'ok   %s decodes identically on wasm-gc / js / wasm\n' "$f"
+  else
+    printf 'FAIL %s instruction stream differs across backends\n' "$f"
     fail=1
   fi
 done

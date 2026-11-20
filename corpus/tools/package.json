@@ -6,6 +6,6 @@
     "build": "node build.js"
   },
   "dependencies": {
-    "wabt": "^1.0.36"
+    "wabt": "^1.0.39"
   }
 }

@@ -2,7 +2,7 @@
 
 This file is normative. If the code and this document disagree, that is a bug in one of them.
 
-Version: 0.1.0 (stage S2). Sections marked *(S10)* are filled in as the corresponding stage lands;
+Version: 0.1.0 (stage S3). Sections marked *(S10)* are filled in as the corresponding stage lands;
 what is written below is already true of the shipped code.
 
 ---
@@ -16,16 +16,30 @@ what is written below is already true of the shipped code.
 | Section order | the spec order, including `datacount` between `element` and `code` | duplicated or out-of-order section | `E005` |
 | Value types | `i32` `i64` `f32` `f64`, plus `v128` **recognised but never generated** | `funcref` / `externref` outside a table | `E101` |
 | Function signatures | any arity, zero or more results | — (multi-value is parsed and flagged; codegen refuses those functions individually) | — |
-| Instructions | the 172 MVP opcodes (S3) | `0xFB`, `0xFC`, `0xFD`, `0xFE`, exception opcodes, tail calls | `E006`, `E101`–`E105`, `E109` |
+| Instructions | every opcode `0x00`–`0xC4` with a known operand length: control, parametric, variable, memory, the numeric block, sign extension, plus `0xFC` bulk memory and the eight saturating truncations | `0xD0`–`0xD2` (reference types), `0xFB`, `0x1C`, tail calls, exception opcodes | `E006`, `E007`, `E101`, `E104`, `E105` |
+| Instructions with an unknown operand length | nothing — decoding **stops** at `0xFD`/`0xFE` and the body is marked partial | — | partial body, reported by `disasm` |
 | Memories | exactly one, 32-bit | `memory64`, multi-memory, shared memory | `E106`, `E103` |
 | Tables | any number, `funcref` only | `externref` tables | `E101` |
 | Imports | function imports only (S3 onward, surfaced as a `Host` trait whose default method traps) | memory/table/global imports | `E107` |
 | Data / element segments | active, table/memory 0, i32 constant offset | passive segments, element expressions | `E109` |
 | Control flow | reducible CFGs (covers what C/Rust compilers emit) | irreducible CFGs | `E108` |
 
-**Status.** Everything down to "data / element segments" is implemented and tested (S2 = byte layer
-+ section decoder + `info`). Instruction decoding, control-flow structuring and code generation are
-contracts for S3–S7.
+**Status.** Everything down to "instructions with an unknown operand length" is implemented and
+tested (S2 = container, S3 = instruction decoder + `disasm`). Control-flow structuring and code
+generation are contracts for S4–S7.
+
+**Instruction-level rule: a wrong *length* stops, a wrong *value* is reported.** An opcode whose
+operand size we do not know (`0xFD` SIMD, `0xFE` atomics) cannot be skipped, because guessing would
+desynchronise the rest of the body and produce plausible-looking nonsense. Decoding stops there and
+`DecodedBody.complete` becomes false; everything before it is still valid IR with valid offsets.
+An opcode we fully understand but cannot generate (`0xFC` bulk memory, `call_indirect`) decodes
+normally and is refused later, at the point of generation. Measured effect: of 79 bodies in the
+20 KB MoonBit artifact, 78 decode completely and 1 stops — the function whose name ends in `simd`.
+
+**The function's own `end` is the body terminator, not an instruction.** It is validated (it must be
+the last byte) and then dropped, so the instruction stream is `instr*` and the body exit is implicit.
+wabt's text format does the same: it prints `end)` for the outermost block and nothing for the
+function end, which is why the two decoders' per-body instruction counts agree exactly.
 
 **The parse/generate split is deliberate.** `info` parses more than `decompile` will generate:
 `v128` types, multi-value signatures, huge local counts and (later) unimplemented opcodes are all
@@ -58,6 +72,8 @@ and a test asserts that the tags stay unique and that the count matches.
 | E107 | unsupported | non-function import | link memory/table/global statically |
 | E108 | unsupported | irreducible CFG | see §3 |
 | E109 | unsupported | bulk memory | no passive segments, no `memory.copy`/`fill` |
+| E110 | unsupported | second table/memory named | one table, one memory |
+| E111 | unsupported | indirect call through a table | inline the call |
 
 Rule: **reject, never silently degrade.** Emitting code that compiles but computes the wrong value is
 the one failure mode this project refuses to have.
@@ -73,8 +89,8 @@ and is refused rather than approximated.
 
 ## 4. Known limitations at 0.1.0
 
-1. **No decompilation yet.** `decompile` and `verify` print "not implemented" and exit 2. `info` is
-   fully implemented.
+1. **No decompilation yet.** `decompile` and `verify` print "not implemented" and exit 2. `info` and
+   `disasm` are fully implemented.
 2. **native backend unverified.** This machine has no MSVC and `--target llvm` requires a nightly
    toolchain (`missing prelude.mi`). Verification therefore runs on `wasm`, `wasm-gc` and `js`.
    Installing VS Build Tools makes native available; it does not change any correctness criterion,
@@ -95,8 +111,16 @@ and is refused rather than approximated.
    `b"\x03abc"` decodes to `"扡"`. `core/utf8.mbt` contains a real decoder; do not "simplify" it away.
 8. **MoonBit's own wasm output is not in the MVP subset.** It emits a `datacount` section,
    multi-value signatures, `v128` locals in its memcpy helper, and bulk-memory/SIMD instructions.
-   `info` parses the first three (they are structural); instruction-level refusal happens in S3.
-   `moonbit_fib.wasm` in `corpus/good/` is the evidence, and `moonlift info` prints the counts.
+   `info` parses the first three (they are structural); the instruction decoder reads 3,878 of its
+   3,940 instructions and stops at the SIMD prefix in `..._blit__from__string__simd`.
+   `moonbit_fib.wasm` in `corpus/good/` is the evidence, and `moonlift disasm --stats` prints it.
+9. **Alignment hints are validated, not ignored.** An `align=` exponent larger than the natural
+   alignment of the access is a spec violation; it is rejected with `E007` rather than carried into
+   generated code, where it would produce a misaligned read.
+10. **No type checking yet.** The decoder validates *structure* (label depth, `else` placement,
+    function-final `end`, index bounds, memarg alignment) but not *types*: `i32.add` on two `f32`
+    operands decodes without complaint. The typed stack simulation of S5 is what makes that an
+    error, and until it lands this is a real gap, stated here rather than implied.
 
 ## 5. Reproduce every claim
 
@@ -107,5 +131,7 @@ bash script/check.sh
 Every number quoted in the README or in the submission form must be reproducible by a command in
 `script/`; otherwise it does not belong in the document. The script currently verifies: formatting,
 three-target `moon check`, 58 unit tests on two targets, CLI usage paths, 8 fixtures decoded,
-11 malformed fixtures rejected with code + offset, and byte-identical `info` output across
-`wasm-gc`, `js` and `wasm`.
+18 malformed fixtures rejected with code + offset (7 of them at the instruction layer, each
+reporting the code written in its filename), byte-identical `info` **and** `disasm --ops` output
+across `wasm-gc`, `js` and `wasm`, and a cross-check of every decoded mnemonic against wabt
+(`4,386 matched, 0 mismatched, 62 not attempted`).

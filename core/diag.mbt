@@ -25,6 +25,8 @@ pub enum ErrorCode {
   E107NonFuncImport // memory / table / global import
   E108Irreducible // CFG cannot be structured
   E109BulkMemory // bulk-memory / passive segment constructs
+  E110MultiTable // call_indirect / memory.size naming a second table or memory
+  E111IndirectCall // indirect call through a table
 }
 
 ///|
@@ -54,6 +56,8 @@ pub fn all_codes() -> Array[ErrorCode] {
     E107NonFuncImport,
     E108Irreducible,
     E109BulkMemory,
+    E110MultiTable,
+    E111IndirectCall,
   ]
 }
 
@@ -80,6 +84,8 @@ pub fn ErrorCode::tag(self : ErrorCode) -> String {
     E107NonFuncImport => "E107"
     E108Irreducible => "E108"
     E109BulkMemory => "E109"
+    E110MultiTable => "E110"
+    E111IndirectCall => "E111"
   }
 }
 
@@ -129,6 +135,9 @@ pub fn ErrorCode::hint(self : ErrorCode) -> String {
     E108Irreducible => "structural jump into a loop body; see BOUNDARY.md"
     E109BulkMemory =>
       "rebuild without bulk-memory (passive segments, memory.copy/fill)"
+    E110MultiTable => "only one table and one memory are supported"
+    E111IndirectCall =>
+      "a decompiled body cannot dispatch through a table; inline the call"
   }
 }
 

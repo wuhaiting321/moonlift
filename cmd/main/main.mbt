@@ -71,7 +71,7 @@ fn tail_from(argv : Array[String], from : Int32) -> Array[String] {
 /// and not `node`.
 fn normalize_args(argv : Array[String]) -> Array[String] {
   let known = [
-    "info", "decompile", "verify", "help", "--help", "-h", "version", "--version",
+    "info", "disasm", "decompile", "verify", "help", "--help", "-h", "version", "--version",
   ]
   let mut i = 0
   while i < argv.length() && !known.contains(argv[i]) {
@@ -128,6 +128,64 @@ fn run_info(args : Array[String]) -> Int32 {
 }
 
 ///|
+/// `disasm <file> [--ops|--stats]`: decode every function body and print it.
+///
+/// Unlike `info`, this can fail on a body the decoder rejects, and that is the
+/// point: `info` answers "what is in this file", `disasm` answers "what does the
+/// decoder understand", so a rejection has to surface as a rejection.
+fn run_disasm(args : Array[String]) -> Int32 {
+  if args.length() < 2 {
+    println("moonlift: 'disasm' needs a path to a .wasm file")
+    return EXIT_USAGE
+  }
+  let path = args[1]
+  let mut mode = 0 // 0 listing, 1 ops, 2 stats
+  let mut i = 2
+  while i < args.length() {
+    if args[i] == "--ops" {
+      mode = 1
+    } else if args[i] == "--stats" {
+      mode = 2
+    }
+    i = i + 1
+  }
+  match read_input(path) {
+    None => {
+      println("moonlift: cannot read '\{path}'")
+      EXIT_UNREADABLE
+    }
+    Some(data) =>
+      match @core.decode_bytes(data) {
+        Err(d) => {
+          println("moonlift: rejected '\{path}'")
+          println("  \{d.render_verbose()}")
+          EXIT_REJECTED
+        }
+        Ok(m) => {
+          let out = if mode == 1 {
+            @core.disasm_ops_text(m)
+          } else if mode == 2 {
+            @core.disasm_stats_text(m)
+          } else {
+            @core.disasm_text(m, path)
+          }
+          match out {
+            Ok(text) => {
+              println(text)
+              EXIT_OK
+            }
+            Err(d) => {
+              println("moonlift: cannot decode the code section of '\{path}'")
+              println("  \{d.render_verbose()}")
+              EXIT_REJECTED
+            }
+          }
+        }
+      }
+  }
+}
+
+///|
 /// Command dispatcher. Returns the process exit code; `main` only prints it.
 fn run(args : Array[String]) -> Int32 {
   if args.length() == 0 {
@@ -145,6 +203,7 @@ fn run(args : Array[String]) -> Int32 {
       EXIT_OK
     }
     "info" => run_info(args)
+    "disasm" => run_disasm(args)
     "decompile" | "verify" => {
       println(
         "moonlift: '\{cmd}' is not implemented yet (planned stage S7 / S8)",

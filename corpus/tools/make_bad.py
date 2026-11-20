@@ -11,6 +11,10 @@ import pathlib
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 OUT = ROOT / "bad"
+# Second family: the container is valid, the *instruction stream* is not. These
+# exist to prove the two layers are independent — `info` accepts all of them,
+# `disasm` rejects each with the code in its filename.
+OUT_CODE = ROOT / "badcode"
 
 HEADER = b"\x00asm" + (1).to_bytes(4, "little")
 
@@ -98,11 +102,47 @@ CASES["bad_const_expr.wasm"] = HEADER + section(
 )
 
 
+def body(instrs: bytes) -> bytes:
+    """A function body: no locals, `instrs`, then the closing `end`."""
+    raw = vec([]) + instrs + b"\x0b"
+    return leb(len(raw)) + raw
+
+
+def one_func(instrs: bytes) -> bytes:
+    return HEADER + TYPE_SEC + FUNC_SEC + section(10, vec([body(instrs)]))
+
+
+# The trailing `_eNNN` is the error code the decoder must report; check.sh reads
+# it from the filename, so the expectation lives next to the sample instead of in
+# a table that can drift.
+CODE_CASES = {
+    # nop, then 0x06 which is not in the MVP set.
+    "unknown_opcode_e006.wasm": one_func(b"\x01\x06"),
+    # br 1 at the top level: only label 0 (the function body) is in scope.
+    "bad_label_e008.wasm": one_func(b"\x0c\x01"),
+    # local.get 5 in a function with no params and no locals.
+    "bad_local_index_e008.wasm": one_func(b"\x20\x05"),
+    # `else` with no `if`.
+    "else_without_if_e006.wasm": one_func(b"\x05"),
+    # i32.load with an alignment hint of 2^3 on a 4-byte access.
+    "over_aligned_e007.wasm": one_func(b"\x28\x03\x00"),
+    # end, nop, end: the container check passes because the last byte is `end`,
+    # but the body ended a byte early.
+    "trailing_after_end_e005.wasm": one_func(b"\x0b\x01"),
+    # i32.const with no operand left: the `end` byte is consumed as the value.
+    "truncated_instr_e001.wasm": one_func(b"\x41"),
+}
+
+
 def main() -> None:
     OUT.mkdir(parents=True, exist_ok=True)
     for filename, data in CASES.items():
         (OUT / filename).write_bytes(data)
-        print(f"{filename:24s} {len(data):4d} bytes")
+        print(f"{filename:28s} {len(data):4d} bytes")
+    OUT_CODE.mkdir(parents=True, exist_ok=True)
+    for filename, data in CODE_CASES.items():
+        (OUT_CODE / filename).write_bytes(data)
+        print(f"{filename:28s} {len(data):4d} bytes  (code layer)")
 
 
 if __name__ == "__main__":
