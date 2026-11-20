@@ -2,7 +2,7 @@
 
 This file is normative. If the code and this document disagree, that is a bug in one of them.
 
-Version: 0.1.0 (stage S6). Sections marked *(S10)* are filled in as the corresponding stage lands;
+Version: 0.1.0 (stage S7). Sections marked *(S10)* are filled in as the corresponding stage lands;
 what is written below is already true of the shipped code.
 
 ---
@@ -26,11 +26,11 @@ what is written below is already true of the shipped code.
 | Typing | every body the spec validates: operand types, block results, branch payloads, function result | a body that does not type-check (only reachable from a hand-patched or non-conforming producer) | `E011` |
 | Multi-value | recognised (type-index block types, signatures with several results) and reported by `info` | *generated*: a block typed by index, or a call returning several values | `E112` |
 
-**Status.** Everything down to "instructions with an unknown operand length" is implemented and
-tested (S2 = container, S3 = instruction decoder + `disasm`, S4 = control-flow graph, S5 = typed
-stack simulation and type checking, S6 = structuring back to `while` / `if` / `match`). Code
-generation of MoonBit source is the contract for S7; the deviations that structuring introduces are
-listed in §3, which is now populated.
+**Status.** Everything in the table is implemented and tested (S2 = container, S3 = instruction
+decoder + `disasm`, S4 = control-flow graph, S5 = typed stack simulation and type checking, S6 =
+structuring back to `while` / `if` / `match`, S7 = MoonBit code generation). §3 lists the deviations
+structuring and code generation introduce; they are the complete list, and each one is a decision
+with a reason rather than an oversight.
 
 **Instruction-level rule: a wrong *length* stops, a wrong *value* is reported.** An opcode whose
 operand size we do not know (`0xFD` SIMD, `0xFE` atomics) cannot be skipped, because guessing would
@@ -238,24 +238,81 @@ one that names the function it cannot translate.
 (`--struct-stats` lists all six). The remaining 72 bodies are complete; nothing is silently dropped —
 `structured + skipped + refused` is asserted to equal the function count in `script/check.sh`.
 
-### D7 · Dead code after an unconditional transfer stays dead, and is still emitted
+### D7 · The emitter drops an unreachable tail; the structurer still produces it
 
-**Deviation.** `continue` / `break` / `brk = n; break` do not suppress the statements the structurer
-placed after them, so a loop whose body ends in a back edge still carries an unreachable tail guard.
+**Deviation.** The structurer places a guard after a construct whose body ends in `return`,
+`continue`, `break` or an unwind. The emitter stops printing at such a node, so the tail is absent
+from `funcs.mbt` while `disasm --struct` still shows it. The pruning rule is deliberately narrow: a
+sequence stops after a node that cannot fall through, and a `while true` counts as one only when its
+body ends in a terminal transfer *and* nothing inside it breaks or unwinds — the only case where no
+exit exists at all.
 
-**Reason.** Suppressing it would require a reachability pass over the emitted tree that buys nothing:
-the guard is two lines and the alternative is a second analysis whose bugs would be invisible.
+**Reason.** Kept in the tree because it is a true statement about the graph, dropped from the text
+because an unreachable statement is a warning in every build of the generated package, and the output
+has to compile cleanly to be usable.
 
-**Impact.** Cosmetic only — the extra `if (brk != n) { break }` after a `continue` is unreachable and
-MoonBit does not reject unreachable statements. It is visible in `$sum_to` of
-`corpus/good/control.wasm`; a reader can confirm unreachability by the `continue` immediately above.
+**Impact.** Cosmetically the two views differ, which §5's gate tolerates by construction: every
+declaration analysis (`mark_locals`, `assigned_locals`, `scan_reads`, `uses_brk`) walks the tree
+through the *same* pruning, so no declaration refers to something that was dropped, and no dropped
+statement can introduce a name. What is dropped is unreachable by construction, so nothing observable
+changes. Verified on the fixtures whose loops exit by `br_if` (`control.wasm`, `moonbit_fib.wasm`).
+
+### D8 · A body that cannot be translated becomes a trapping stub, not a missing function
+
+**Deviation.** A refused or skipped function is written as a function with its real signature and a
+body of `trap("f47 was not decompiled: E111 at byte 5431: ...")`. Its callers therefore still
+compile, and the module runs everywhere except through that function.
+
+**Reason.** The alternative — omitting the function — leaves every caller uncompilable. Measured: 7
+errors on the real artifact, one per refused function that something still calls. A stub is also
+strictly safer than the other alternative, inventing a body: it stops at the call rather than
+returning a plausible wrong answer.
+
+**Impact.** `funcs.mbt` for the real artifact holds 79 function definitions, 7 of which are stubs;
+the count is asserted in `script/check.sh` so a stub cannot quietly disappear. Each stub carries the
+diagnostic in its doc comment and in its `trap` message.
+
+### D9 · Names are generated, and unused ones are underscored
+
+**Deviation.** Parameters are `p0`, locals `l0`, temporaries `t0`, functions `f0`, globals `g0` — the
+original names are gone unless the module's custom `name` section supplied them (which
+`moonbit_fib.wasm` does, and those names appear in comments). A parameter the body never reads and
+never writes is `_p0`; a local that nothing reads is `_l3`; a temporary that is only written is `_t2`;
+`mut` appears only where something is stored. Exports keep their published name unless it is a
+MoonBit keyword or not a legal identifier, in which case `e_` is prefixed (`guard` → `e_guard`) and a
+leading digit is prefixed with `e_` too.
+
+**Reason.** The generated package must compile with zero warnings, and MoonBit signals every one of
+these as a warning. The underscore is MoonBit's own spelling for "deliberately unused", so the output
+says what it means; stripping meaning out of names would instead hide it.
+
+**Impact.** The output is not a byte-for-byte reverse of the input source, and it is not claimed to
+be: it is a program with the same behaviour and the same block structure, with block provenance kept
+in `// b3` comments that match `disasm --struct`. Renamed exports are listed by `decompile` on
+request (the sanitised name is in `exports.mbt`, one line per export).
+
+### D10 · Floats are emitted as bit patterns, not decimal literals
+
+**Deviation.** `f32` constants are written as `Float::reinterpret_from_int(2143289345)` and `f64`
+constants as `Int64::reinterpret_as_double(…L)`. No decimal literal appears in the output.
+
+**Reason.** A decimal literal has to survive a printer on the way out and a parser on the way back in,
+and the two things it must not lose are a NaN payload and the sign of a zero. `-0.0` printed as
+`0.0`, or a signalling NaN quietened by a formatter, would be a silent semantic change in a
+decompiler.
+
+**Impact.** Less readable, exactly equal. The same reasoning applies to `min` / `max` / `abs` /
+`copysign` / `nearest`, which are runtime helpers rather than operators: their wasm semantics (NaN
+propagation, `min(0, -0) = -0`, ties-to-even) are not the host language's, and every one of them was
+measured before being written into `runtime/runtime.mbt`.
 
 ## 4. Known limitations at 0.1.0
 
-1. **No MoonBit source is generated yet.** `decompile` and `verify` print "not implemented" and exit
-   2. `info`, `disasm` (including `--cfg`, `--stack` and `--struct`) are fully implemented; `--struct`
-   prints pseudo-code shaped like MoonBit but is not written to disk and not compiled. S7 turns the
-   tree in `core/struct.mbt` into `.mbt` source and `moon check`s it.
+1. **`verify` is not implemented yet.** `decompile` works end to end and is gated (all 9 fixtures
+   compile at zero warnings; 2 of them are executed against values the original produces under Node),
+   but the differential harness that would run *every* decompiled function on generated inputs is S8.
+   Until it exists, "behaves like the original" is a claim about the 23 pinned calls in
+   `script/smoke/`, not about the module as a whole.
 2. **native backend unverified.** This machine has no MSVC and `--target llvm` requires a nightly
    toolchain (`missing prelude.mi`). Verification therefore runs on `wasm`, `wasm-gc` and `js`.
    Installing VS Build Tools makes native available; it does not change any correctness criterion,
@@ -305,9 +362,10 @@ MoonBit does not reject unreachable statements. It is visible in `$sum_to` of
     shows everything it decoded; only the graph refuses.
 14. **`if` conditions and block results are not folded into the outgoing edges.** The condition of an
     `if` is a statement (`SIf`) on the block that ends with it, and the values a block hands on are
-    its `exit` expressions; the edge itself carries only types. This keeps a block's analysis local,
-    but it means S7 has to materialise edge values into variables — which is what the generated code
-    would do anyway, so the cost is one assignment per edge and not a redesign.
+    its `exit` expressions; the edge itself carries only types. This keeps a block's analysis local.
+    The cost is that the structurer has to materialise edge values into variables — done in S6 at the
+    predecessor, which is the last point where those expressions are still correct — so the generated
+    code carries one assignment per edge value rather than a redesign of the analysis.
 15. **A `br` that leaves the function is emitted as `return`.** `br` to the outermost label and
     `return` are the same instruction at run time; printing the first as a `br` would produce a label
     with no enclosing label, which is not expressible in structured code. The two are distinguished
@@ -321,7 +379,7 @@ bash script/check.sh
 
 Every number quoted in the README or in the submission form must be reproducible by a command in
 `script/`; otherwise it does not belong in the document. The script currently verifies: formatting,
-three-target `moon check`, 131 unit tests on two targets, CLI usage paths, 9 fixtures decoded,
+three-target `moon check`, 150 unit tests on two targets, CLI usage paths, 9 fixtures decoded,
 19 malformed fixtures rejected with code + offset (8 of them at the instruction layer, each
 reporting the code written in its filename — including one that decodes but does not type-check),
 byte-identical `info`, `disasm --ops`, `disasm --cfg`, `disasm --stack` **and** `disasm --struct`
@@ -329,6 +387,19 @@ output across `wasm-gc`, `js` and `wasm`, a graph for every fixture with no body
 irreducible, the pinned recovery counts of the real artifact (72 of 79 analysed, 6 refused, 1
 skipped, 0 rejected, 111 spills of which 1 is a reordering hazard), both reordering hazards on the
 fixture that isolates them, the structurer on every fixture (no raw `br` / `br_if` / `br_table` /
-`if (...)` may survive; `blocks emitted 395 of 395`; `nodes 1012`, `guards 32`, `switches 0`, `max
-depth 7`; and `structured + skipped + refused` must equal the function count), and a cross-check of
-every decoded mnemonic against wabt (`4,423 matched, 0 mismatched, 62 not attempted`).
+`if (...)` may survive; `blocks emitted 395 of 395`; `nodes 1115`, `guards 32`, `switches 0`, `max
+depth 7`; and `structured + skipped + refused` must equal the function count), a cross-check of
+every decoded mnemonic against wabt (`4,423 matched, 0 mismatched, 62 not attempted`), **the pinned
+`decompile` summary of all 9 fixtures and `moon check` of every generated package at zero warnings**,
+and **execution of the generated `control` and `fib` packages against values taken from the original
+module under Node**.
+
+Two of those deserve their own sentence because they are the ones that would otherwise let a broken
+emitter pass:
+
+- `moon check` at **zero warnings**, not merely zero errors: the naming and pruning rules of D7 and
+  D9 exist only to satisfy this, and a regression shows up as a warning.
+- the smoke tests run the *generated* code and compare with the *original* module in Node
+  (`corpus/tools/oracle.js`). Both bugs found in the emitter — a `br_if` to the end of the body
+  emitted as an unconditional `return`, and a block entry value printed as `in0` with nothing binding
+  it — compile cleanly and pass every structural check. Only running the code found them.

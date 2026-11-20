@@ -319,9 +319,9 @@ fn same_types(a : Array[ValType], b : Array[ValType]) -> Bool {
 /// One block, after simulation.
 ///
 /// `entry` and `exit` are stack *shapes*: types only. The values that flow along
-/// an edge are named `EParam` inside the successor and are materialised by the
-/// edge itself in S7 — a block that had to care about its predecessor's
-/// temporaries would not be a block.
+/// an edge are named `EParam` inside the successor, and the structurer rewrites
+/// them into temps that the edge itself writes — a block that had to care about
+/// its predecessor's temporaries would not be a block.
 pub struct BlockStack {
   block : Int32
   entry : Array[ValType]
@@ -338,6 +338,13 @@ pub struct BlockStack {
   /// block's last instruction is not an unconditional transfer.
   falls : Bool
   stmts : Array[Stmt]
+  /// The type of each temporary, in index order.
+  ///
+  /// Recorded rather than re-derived: the simulator knows the type at the moment
+  /// it allocates a temp, and the code generator would otherwise have to infer it
+  /// back from the expression — which is a type checker written twice, with the
+  /// second one untested.
+  temp_types : Array[ValType]
   /// Values materialised because a call or a `memory.grow` produced them.
   forced : Int32
   /// Values materialised because deferring them would have changed the result.
@@ -378,6 +385,7 @@ fn dead_stack(b : Int32) -> BlockStack {
     exit_exprs: [],
     falls: false,
     stmts: [],
+    temp_types: [],
     forced: 0,
     hazard: 0,
     dead: true,
@@ -411,6 +419,8 @@ pub struct Slot {
 priv struct Sim {
   stack : Array[Slot]
   stmts : Array[Stmt]
+  /// Type of each allocated temp, indexed by temp id.
+  types : Array[ValType]
   mut temps : Int32
   mut forced : Int32
   mut hazard : Int32
@@ -418,7 +428,7 @@ priv struct Sim {
 
 ///|
 fn Sim::new() -> Sim {
-  { stack: [], stmts: [], temps: 0, forced: 0, hazard: 0, }
+  { stack: [], stmts: [], types: [], temps: 0, forced: 0, hazard: 0, }
 }
 
 ///|
@@ -515,6 +525,7 @@ fn cut_stack(s : Sim, n : Int32) -> Unit {
 fn Sim::spill(self : Sim, e : Expr, t : ValType) -> Unit {
   let id = self.temps
   self.temps = self.temps + 1
+  self.types.push(t)
   self.forced = self.forced + 1
   self.stmts.push(STemp(id, e))
   self.push(ETemp(id), t)
@@ -532,6 +543,7 @@ fn Sim::sink_local(self : Sim, i : Int32) -> Unit {
     if expr_mentions_local(s.expr, i) {
       let id = self.temps
       self.temps = self.temps + 1
+      self.types.push(s.ty)
       self.hazard = self.hazard + 1
       self.stmts.push(STemp(id, s.expr))
       self.stack[k] = { expr: ETemp(id), ty: s.ty, }
@@ -549,6 +561,7 @@ fn Sim::sink_global(self : Sim, i : Int32) -> Unit {
     if expr_mentions_global(s.expr, i) {
       let id = self.temps
       self.temps = self.temps + 1
+      self.types.push(s.ty)
       self.hazard = self.hazard + 1
       self.stmts.push(STemp(id, s.expr))
       self.stack[k] = { expr: ETemp(id), ty: s.ty, }
@@ -566,6 +579,7 @@ fn Sim::sink_globals(self : Sim) -> Unit {
     if expr_reads_any_global(s.expr) {
       let id = self.temps
       self.temps = self.temps + 1
+      self.types.push(s.ty)
       self.hazard = self.hazard + 1
       self.stmts.push(STemp(id, s.expr))
       self.stack[k] = { expr: ETemp(id), ty: s.ty, }
@@ -587,6 +601,7 @@ fn Sim::sink_loads(self : Sim) -> Unit {
     if expr_reads_memory(s.expr) {
       let id = self.temps
       self.temps = self.temps + 1
+      self.types.push(s.ty)
       self.hazard = self.hazard + 1
       self.stmts.push(STemp(id, s.expr))
       self.stack[k] = { expr: ETemp(id), ty: s.ty, }
@@ -1037,6 +1052,7 @@ fn finish(
     exit_exprs: exprs,
     falls,
     stmts: s.stmts,
+    temp_types: s.types,
     forced: s.forced,
     hazard: s.hazard,
     dead: false,

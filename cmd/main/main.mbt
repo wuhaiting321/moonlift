@@ -24,7 +24,7 @@ fn usage_text() -> String {
   let b = StringBuilder()
   b.write_string(@core.banner())
   b.write_string(
-    "\n\nUsage:\n  moonlift <command> [options]\n\nCommands:\n  info <file.wasm>              print module structure\n  disasm <file.wasm> [--ops|--stats|--cfg]\n                                print the decoded listing, or the control-flow graph\n  decompile <file.wasm> -o <dir> emit MoonBit sources into <dir>\n  verify <file.wasm> [-n N]     differential test against a reference engine\n  help                          show this text\n  version                       print version\n\nExit codes: 0 ok, 2 usage, 3 input rejected, 4 input unreadable.\n",
+    "\n\nUsage:\n  moonlift <command> [options]\n\nCommands:\n  info <file.wasm>              print module structure\n  disasm <file.wasm> [--ops|--stats|--cfg|--stack|--struct]\n                                print the decoded listing, or the control-flow graph\n  decompile <file.wasm> -o <dir> emit MoonBit sources into <dir>\n  verify <file.wasm> [-n N]     differential test against a reference engine\n  help                          show this text\n  version                       print version\n\nExit codes: 0 ok, 2 usage, 3 input rejected, 4 input unreadable.\n",
   )
   b.to_string()
 }
@@ -210,6 +210,132 @@ fn run_disasm(args : Array[String]) -> Int32 {
 }
 
 ///|
+/// The runtime source that is copied into every generated package, printing where
+/// it looked when it cannot be found.
+///
+/// The decompiler has to *read* it because the alternative is embedding it: a
+/// file that lives in this repository is compiled by this repository's gate on
+/// every run, and one embedded in a string literal is compiled only when someone
+/// generates a package. The search is relative to the working directory, which is
+/// the repository root in every documented invocation.
+fn find_runtime(explicit : String?) -> String? {
+  let candidates : Array[String] = []
+  match explicit {
+    Some(p) => candidates.push(p)
+    None => ()
+  }
+  candidates.push("runtime/runtime.mbt")
+  candidates.push("../runtime/runtime.mbt")
+  candidates.push("../../runtime/runtime.mbt")
+  let mut found : String? = None
+  for c in candidates {
+    if found is None && @fs.path_exists(c) {
+      found = Some(c)
+    }
+  }
+  found
+}
+
+///|
+/// `decompile <file> -o <dir> [--runtime <path>]`: write a MoonBit package.
+///
+/// The package is meant to be checked and then edited: nothing here writes a file
+/// that a later run will not overwrite, so the output directory is the user's
+/// once it exists.
+fn run_decompile(args : Array[String]) -> Int32 {
+  if args.length() < 2 {
+    println("moonlift: 'decompile' needs a path to a .wasm file")
+    return EXIT_USAGE
+  }
+  let path = args[1]
+  let mut out_dir = ""
+  let mut runtime : String? = None
+  let mut i = 2
+  while i < args.length() {
+    if args[i] == "-o" && i + 1 < args.length() {
+      out_dir = args[i + 1]
+      i = i + 1
+    } else if args[i] == "--runtime" && i + 1 < args.length() {
+      runtime = Some(args[i + 1])
+      i = i + 1
+    }
+    i = i + 1
+  }
+  if out_dir == "" {
+    println("moonlift: 'decompile' needs an output directory (-o <dir>)")
+    return EXIT_USAGE
+  }
+  let runtime_path = match find_runtime(runtime) {
+    Some(p) => p
+    None => {
+      println("moonlift: cannot find runtime/runtime.mbt")
+      println(
+        "  run from the repository root, or pass --runtime <path-to-runtime.mbt>",
+      )
+      return EXIT_UNREADABLE
+    }
+  }
+  let data = match read_input(path) {
+    None => {
+      println("moonlift: cannot read '\{path}'")
+      return EXIT_UNREADABLE
+    }
+    Some(d) => d
+  }
+  let m = match @core.decode_bytes(data) {
+    Err(d) => {
+      println("moonlift: rejected '\{path}'")
+      println("  \{d.render_verbose()}")
+      return EXIT_REJECTED
+    }
+    Ok(m) => m
+  }
+  let runtime_src = match read_text(runtime_path) {
+    Some(t) => t
+    None => {
+      println("moonlift: cannot read '\{runtime_path}'")
+      return EXIT_UNREADABLE
+    }
+  }
+  let report = @core.emit_package(m)
+  if !@fs.path_exists(out_dir) {
+    match
+      (@fs.create_dir(out_dir) catch {
+        _ => {
+          println("moonlift: cannot create '\{out_dir}'")
+          return EXIT_UNREADABLE
+        }
+      }) {
+      _ => ()
+    }
+  }
+  let names : Array[String] = []
+  for f in report.files {
+    names.push(f.name)
+    write_text(out_dir + "/" + f.name, f.text)
+  }
+  write_text(out_dir + "/runtime.mbt", runtime_src)
+  names.push("runtime.mbt")
+  let _ = names
+  println(@core.gen_summary_text(report, path, out_dir))
+  EXIT_OK
+}
+
+///|
+fn read_text(path : String) -> String? {
+  Some(@fs.read_file_to_string(path)) catch {
+    _ => None
+  }
+}
+
+///|
+fn write_text(path : String, text : String) -> Unit {
+  @fs.write_string_to_file(path, text) catch {
+    _ => ()
+  }
+}
+
+///|
 /// Command dispatcher. Returns the process exit code; `main` only prints it.
 fn run(args : Array[String]) -> Int32 {
   if args.length() == 0 {
@@ -228,10 +354,9 @@ fn run(args : Array[String]) -> Int32 {
     }
     "info" => run_info(args)
     "disasm" => run_disasm(args)
-    "decompile" | "verify" => {
-      println(
-        "moonlift: '\{cmd}' is not implemented yet (planned stage S7 / S8)",
-      )
+    "decompile" => run_decompile(args)
+    "verify" => {
+      println("moonlift: 'verify' is not implemented yet (planned stage S8)")
       EXIT_USAGE
     }
     _ => {

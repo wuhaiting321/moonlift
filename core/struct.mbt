@@ -121,7 +121,7 @@ pub enum Node {
   /// the value is still correct — at the end of the predecessor, after its last
   /// statement — which is why this node lives next to the transfer and not at
   /// the top of the block that consumes it.
-  NAssign(Int32, Expr)
+  NAssign(Int32, ValType, Expr)
   /// A note for the reader. Emitted where code was dropped, so that dropping it
   /// is visible rather than silent.
   NComment(String)
@@ -585,7 +585,15 @@ fn push_edges(ctx : Ctx, out : Array[Node], from : Int32, to : Int32) -> Unit {
   let vals = ctx.fs.blocks[from].exit_exprs
   let mut k = 0
   while k < n && k < vals.length() {
-    out.push(NAssign(in_temp(ctx, to, k), subst(ctx, from, vals[k])))
+    // The type comes from the *destination* block's entry shape: that is what
+    // the value has to be, and it is the only statement the successor can read.
+    out.push(
+      NAssign(
+        in_temp(ctx, to, k),
+        ctx.fs.blocks[to].entry[k],
+        subst(ctx, from, vals[k]),
+      ),
+    )
     k = k + 1
   }
 }
@@ -719,7 +727,22 @@ fn xfer_nodes(ctx : Ctx, b : Int32, x : Xfer) -> Array[Node] {
     return out
   }
   if x.kind == x_ret {
-    return [NReturn(x.vals)]
+    match x.cond {
+      Some(c) => {
+        // `br_if` whose target is the end of the body: the taken side returns,
+        // the other side carries on into the next block. Dropping the condition
+        // here would turn "return if empty" into "return", which is the
+        // difference between a loop and a body that quits on the first
+        // iteration.
+        let arm : Array[Node] = [NReturn(x.vals)]
+        out.push(NIf(c, arm, []))
+        if blk.succ.length() > 1 {
+          push_edges(ctx, out, b, blk.succ[1])
+        }
+        return out
+      }
+      None => return [NReturn(x.vals)]
+    }
   }
   if x.kind == x_trap {
     return [NTrap]
@@ -1250,7 +1273,7 @@ pub fn Node::render(self : Node, m : Module, level : Int32) -> String {
       b.write_string("\{pad}  else { break }\n\{pad}}\n")
     }
     NEdge(from, to) => b.write_string("\{pad};; edge b\{from} -> b\{to}\n")
-    NAssign(t, e) => b.write_string("\{pad}t\{t} = \{e.render(m)}\n")
+    NAssign(t, _, e) => b.write_string("\{pad}t\{t} = \{e.render(m)}\n")
     NBrkReset => b.write_string("\{pad}brk = -1\n")
     NComment(s) => b.write_string("\{pad};; \{s}\n")
   }

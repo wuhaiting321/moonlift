@@ -282,6 +282,10 @@ step "struct: block coverage, and the pinned real-artifact counts"
 # `blocks emitted N of N` is the structurer's own invariant: every reachable
 # block is lowered exactly once. The other numbers are pinned so that a change
 # in the tree walk shows up here as a diff rather than as a silent regression.
+#
+# `nodes` is 1115, and the six over the 1109 the first S6 gate recorded are the
+# six `br_if`-to-the-end-of-the-body sites that used to be emitted as bare
+# returns: each one now needs an `if` wrapper to keep its condition.
 out=$(cli disasm corpus/good/moonbit_fib.wasm --struct-stats)
 while IFS='|' read -r label want; do
   [ -z "$label" ] && continue
@@ -293,7 +297,7 @@ while IFS='|' read -r label want; do
   fi
 done <<'EOF'
 structured|72 of 79 bodies
-nodes|1109
+nodes|1115
 blocks emitted|395 of 395
 guards|32
 switches|0
@@ -310,6 +314,94 @@ if [ "$((a + b))" -eq 79 ]; then
 else
   printf 'FAIL %s structured + %s skipped/refused != 79 bodies\n' "$a" "$b"; fail=1
 fi
+
+step "decompile: every fixture produces a package that compiles cleanly"
+# The claim is not "it writes files": it is that the files are MoonBit a compiler
+# accepts, with nothing left to warn about. Warnings count here too, because the
+# emitter spends real work on them (underscored names for locals nothing reads, a
+# `mut` only where something is stored, unreachable tails dropped), and a
+# regression in any of that shows up as a warning rather than as an error.
+gen=/tmp/moonlift_gen
+rm -rf "$gen"
+mkdir -p "$gen"
+while IFS='|' read -r wasm want; do
+  [ -z "$wasm" ] && continue
+  d="$gen/${wasm%.wasm}"
+  out=$(cli decompile "corpus/good/$wasm" -o "$d")
+  got=$(printf '%s' "$out" | sed -n '2p' | sed -E 's/^functions +//')
+  if [ "$got" != "$want" ]; then
+    printf 'FAIL %s: [%s], expected [%s]\n' "$wasm" "$got" "$want"
+    fail=1
+    continue
+  fi
+  if ( cd "$d" && moon check --target wasm-gc > /tmp/moonlift_gen.log 2>&1 ); then
+    if grep -qi 'warning' /tmp/moonlift_gen.log; then
+      printf 'FAIL %s: generated package compiles with warnings\n' "$wasm"
+      grep -A3 'Warning' /tmp/moonlift_gen.log | head -6
+      fail=1
+    else
+      printf 'ok   %s: %s, and the package compiles with 0 warnings\n' "$wasm" "$want"
+    fi
+  else
+    printf 'FAIL %s: generated package does not compile\n' "$wasm"
+    grep -A4 'Error: \[' /tmp/moonlift_gen.log | head -10
+    fail=1
+  fi
+done <<'EOF'
+arith.wasm|13 emitted, 0 refused, 0 skipped
+control.wasm|6 emitted, 0 refused, 0 skipped
+fib.wasm|3 emitted, 0 refused, 0 skipped
+globals.wasm|5 emitted, 0 refused, 0 skipped
+imports.wasm|3 emitted, 0 refused, 0 skipped
+memory.wasm|6 emitted, 0 refused, 0 skipped
+stack.wasm|8 emitted, 0 refused, 0 skipped
+table.wasm|4 emitted, 2 refused, 0 skipped
+moonbit_fib.wasm|72 emitted, 6 refused, 1 skipped
+EOF
+
+# A refused body still gets a function: the signature is real and the body traps.
+# Dropping it instead would leave its callers uncompilable, which is what the
+# first version of the emitter did — 155 errors on the real artifact, all of them
+# "identifier f47 is unbound".
+if [ -f "$gen/moonbit_fib/funcs.mbt" ]; then
+  n=$(grep -c '^pub fn f' "$gen/moonbit_fib/funcs.mbt")
+  s=$(grep -cE '^/// wasm function [0-9]+: \*\*not decompiled\*\*' "$gen/moonbit_fib/funcs.mbt")
+  if [ "$n" -eq 79 ] && [ "$s" -eq 7 ]; then
+    printf 'ok   moonbit_fib: 79 function definitions, 7 of them trapping stubs\n'
+  else
+    printf 'FAIL moonbit_fib: %s definitions, %s stubs (expected 79 and 7)\n' "$n" "$s"
+    fail=1
+  fi
+else
+  printf 'FAIL moonbit_fib was not generated\n'; fail=1
+fi
+
+step "decompile: the generated package behaves like the original"
+# Compiling is not behaving. Each fixture below is generated, given a test file
+# from `script/smoke/`, and run. The expected values in those files came from the
+# *original* module under Node (`corpus/tools/oracle.js`), so this compares two
+# implementations rather than one implementation against itself.
+#
+# Both bugs found while writing the emitter were invisible to the compile check:
+# a conditional branch to the end of the body emitted as an unconditional
+# `return` (a loop that runs once), and a block entry value read without ever
+# being written. Both change values, and only these tests would have said so.
+for pair in control:control_wbtest.mbt fib:fib_wbtest.mbt; do
+  f=${pair%%:*}
+  t=${pair##*:}
+  d="$gen/$f"
+  if [ ! -d "$d" ]; then
+    printf 'FAIL %s was not generated\n' "$f"; fail=1; continue
+  fi
+  cp "script/smoke/$t" "$d/$t"
+  if ( cd "$d" && moon test --target wasm-gc > /tmp/moonlift_smoke.log 2>&1 ); then
+    printf 'ok   %s: %s\n' "$f" "$(grep -E '^Total tests' /tmp/moonlift_smoke.log | head -1)"
+  else
+    printf 'FAIL %s: generated code does not behave like the original\n' "$f"
+    tail -8 /tmp/moonlift_smoke.log
+    fail=1
+  fi
+done
 
 step "cross-target: same fixture, three backends, identical report"
 for f in corpus/good/fib.wasm corpus/good/globals.wasm corpus/good/moonbit_fib.wasm; do

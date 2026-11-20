@@ -4,22 +4,26 @@
 
 `moonlift` reads a `.wasm` file, recovers functions, control flow and expressions, and emits a
 MoonBit package that `moon build` accepts and that behaves like the original module when run on
-`wasm`, `wasm-gc` and `js`. Correctness is not asserted — it is measured: every decompiled module
-is differentially tested against a reference engine (Node's `WebAssembly`) on random inputs.
+`wasm`, `wasm-gc` and `js`. Correctness is not asserted — it is measured: the expected values are
+taken from the **original** module running under Node's `WebAssembly`, and the generated package has
+to reproduce them.
 
-> **Status: S6 (control-flow structuring).** The byte reader, the section decoder, the MVP
-> instruction decoder, the type checker and the structurer are implemented: 131 white-box tests, 9
-> fixtures decoded, 19 malformed fixtures rejected with a stable error code and a byte offset.
-> `moonlift info` describes a module; `moonlift disasm` decodes every function body to `.wat`;
-> `disasm --cfg` prints basic blocks, dominators, natural loops and a reducibility verdict;
-> `disasm --stack` prints the recovered per-block expressions **and type-checks them**;
-> `disasm --struct` lowers the block graph back to nested `while` / `if` / `match` with no `br` left
-> in it. On the real 20 KB artifact, 72 of 79 bodies are structured — **395 of 395 reachable blocks
-> emitted exactly once** (the structurer's own invariant, asserted as a test) — 6 are refused by
-> name and 1 is skipped, with **nothing rejected as malformed**. The decoder is cross-checked
-> against wabt, an independent implementation: **4,423 of 4,423 reachable instructions agree, 0
-> mismatches**, with 62 instructions in one SIMD helper deliberately not attempted.
-> `decompile` and `verify` are not implemented yet — see [Roadmap](#roadmap) and
+> **Status: S7 (MoonBit code generation).** The pipeline runs end to end: bytes → sections →
+> instructions → basic blocks → typed expressions → nested `while` / `if` / `match` → **MoonBit
+> source that compiles**. 150 white-box tests, 9 fixtures decoded, 19 malformed fixtures rejected
+> with a stable error code and a byte offset.
+>
+> `moonlift info` describes a module; `disasm` decodes every body to `.wat`; `--cfg` prints blocks,
+> dominators, natural loops and a reducibility verdict; `--stack` prints the recovered per-block
+> expressions **and type-checks them**; `--struct` lowers the graph to nested `while` / `if` /
+> `match` with no `br` left in it; `decompile` writes a MoonBit package. On the real 20 KB artifact,
+> 72 of 79 bodies are structured — **395 of 395 reachable blocks emitted exactly once** — 6 are
+> refused by name and 1 is skipped, with **nothing rejected as malformed**. Every one of the 9
+> fixtures decompiles into a package that `moon check` accepts **with zero errors and zero
+> warnings**, and two of them are executed and compared against the original module in Node.
+> The decoder is cross-checked against wabt, an independent implementation: **4,423 of 4,423
+> reachable instructions agree, 0 mismatches**, with 62 instructions in one SIMD helper deliberately
+> not attempted. `verify` is not implemented yet — see [Roadmap](#roadmap) and
 > [BOUNDARY.md](BOUNDARY.md).
 
 ---
@@ -233,7 +237,7 @@ func 1 $f1 (param i32) (result i32)
 
 ```
 structured      72 of 79 bodies
-nodes           1012
+nodes           1115
 blocks emitted  395 of 395
 guards          32
 switches        0
@@ -266,6 +270,90 @@ Exit codes: `0` success · `2` usage error · `3` input rejected (`E0xx`/`E1xx`)
 unreadable. MoonBit has no portable `exit()`, so the code is echoed as `moonlift: exit N`; scripts
 grep for it.
 
+## decompile
+
+```bash
+$ moon run cmd/main --target wasm-gc -- decompile corpus/good/control.wasm -o /tmp/out
+corpus/good/control.wasm -> /tmp/out/
+functions  6 emitted, 0 refused, 0 skipped
+exports    6
+memory     0 page(s), 0 data byte(s)
+globals    0
+imports    0
+files      moon.mod moon.pkg module.mbt funcs.mbt exports.mbt runtime.mbt
+```
+
+Six files, and the package they form depends on nothing outside its own directory:
+
+| File | Contents |
+|---|---|
+| `moon.mod`, `moon.pkg` | a module with no dependencies and no `prelude` beyond the standard one |
+| `runtime.mbt` | the support library: indexed loads and stores, `div`/`rem` trapping, rotations, `trunc`, `min`/`max`, unsigned compares, `Memory`. Copied in, so the output builds anywhere |
+| `module.mbt` | the linear memory with its data segments already copied in, the globals as `Ref`s, and a trapping stub per host import |
+| `funcs.mbt` | one `pub fn f<n>` per function, in index order |
+| `exports.mbt` | one wrapper per export, under the name the original published (sanitised when the name is a MoonBit keyword: `guard` becomes `e_guard`) |
+
+`find_limit` from `control.wasm` — a loop with a `br_if` exit and a `return` inside it — comes back
+as:
+
+```moonbit
+pub fn f4(p0 : Int) -> Int {
+  let mut l1 : Int = 0
+  let mut brk : Int = -1
+  while true {
+    while true {
+      if (l1 >= p0) {
+        brk = 1 // leave c1
+        break
+      }
+      if (l1 == 7) {
+        return l1
+      }
+      // b3
+      l1 = (l1 + 1)
+      continue
+    }
+    if brk >= 0 {
+      if brk == 2 { brk = -1 }
+      else { break }
+    }
+    break
+  }
+  brk = -1
+  return -1
+}
+```
+
+It is not pretty, and it is not meant to be: it is a *witness*. `brk` is a variable only where a
+branch has to carry a destination two or more constructs out, and only the loops that need
+`break`-with-destination get one. The comment `// b3` names the block in `disasm --struct` that the
+statement came from, so the two can be read side by side.
+
+**A refused body still becomes a function.** Its signature is real and its body is
+`trap("f47 was not decompiled: E111 at byte 5431: ...")`. Dropping it instead — the first thing the
+emitter did — leaves every caller uncompilable: 7 errors on the real artifact, each one "the value
+identifier `f47` is unbound", one per refused function that something still calls. A stub keeps the
+module buildable and stops loudly at exactly the call that would otherwise return a wrong value.
+
+**Compiling is not behaving.** `script/check.sh` decompiles all 9 fixtures, runs `moon check` in
+each, and requires **0 errors and 0 warnings**; then it copies the test files from
+`script/smoke/` into the generated packages for `control.wasm` and `fib.wasm` and runs them. The
+expected values in those files came from the *original* module under Node
+(`corpus/tools/oracle.js`), so the comparison is between two implementations.
+
+Two bugs were found this way and are now pinned by tests:
+
+- a `br_if` whose target is the end of the body was emitted as an unconditional `return`, which
+  turns "return if the buffer is empty" into "return" — the difference between a loop and a body
+  that quits on its first iteration;
+- a block's entry value was printed as `in0` with nothing binding it. Every block was still emitted
+  exactly once, so the coverage invariant passed while the code was unbuildable.
+
+A third class only showed up as compiler output, not as wrong values: unused parameters, locals that
+nothing reads, and a `mut` nothing stores to. The emitter now names them `_p0` / `_l3` / `_t2` and
+declares `mut` only where something is written, which is why the 9 generated packages are warning-
+free rather than merely error-free.
+
 ## Repository layout
 
 | Path | Role | Stage |
@@ -277,7 +365,8 @@ grep for it.
 | `core/cfg.mbt` | basic blocks, dominators, natural loops, reducibility | done |
 | `core/stack.mbt` | typed stack simulation, expression recovery, reordering hazards | done |
 | `core/struct.mbt` | construct-tree walker: blocks/loops/ifs, multi-level escapes, `match` for `br_table` | done |
-| `emit/` | MoonBit code generation + prelude | S7 |
+| `core/emit.mbt` | MoonBit code generation: names, expression printing, dead-tail pruning | done |
+| `runtime/` | support library copied into every generated package | done |
 | `cmd/main/` | CLI shell (no logic) | S0, S2 |
 | `corpus/` | fixtures, malformed samples, provenance, regeneration and wabt cross-check | done |
 | `script/` | one-command check / demo scripts | S0 |
@@ -292,8 +381,8 @@ grep for it.
 | S3 | 172 MVP instructions, `.wat`-style dump, wabt cross-check |
 | S4 | CFG + dominators + natural loops + reducibility |
 | S5 | typed stack simulation, type checking, reordering hazards |
-| S6 | structuring: construct-tree walker, one-shot blocks, multi-level escapes ← **you are here** |
-| S7 | MoonBit emitter, first end-to-end decompile |
+| S6 | structuring: construct-tree walker, one-shot blocks, multi-level escapes |
+| S7 | MoonBit emitter, first end-to-end decompile ← **you are here** |
 | S8 | differential verification harness |
 | S9 | corpus expansion: more real compiler output |
 | S10 | `BOUNDARY.md`: support matrix, 8+ semantic deviations, known gaps |
@@ -305,7 +394,7 @@ grep for it.
 bash script/check.sh
 ```
 
-Runs format check, `moon check` on `wasm-gc`/`js`/`wasm`, 131 unit tests on two targets, CLI smoke
+Runs format check, `moon check` on `wasm-gc`/`js`/`wasm`, 150 unit tests on two targets, CLI smoke
 tests, every corpus fixture through the real binary, the code-layer malformed samples (each must
 report the error code written in its filename — including the one that decodes but does not
 type-check), a cross-backend comparison requiring `info`, `disasm --ops`, `disasm --cfg`,
@@ -314,7 +403,13 @@ control-flow graph on every fixture (no body may come out irreducible, and the `
 pinned to its exact successor line), the pinned recovery counts of the real artifact, both reordering
 hazards on the fixture that isolates them, the structurer on every fixture (no raw branch statement
 may survive, and the pinned `structured` / `nodes` / `blocks emitted` / `guards` / `max depth` counts
-may not drift), and the decoder against wabt.
+may not drift), the decoder against wabt, **every fixture decompiled and the generated package
+compiled with `moon check` at zero warnings**, and **the generated packages for `control` and `fib`
+executed against the values the originals produce under Node**.
+
+The last two are the ones that matter. A code generator that emits something a compiler rejects is
+obviously broken, but one that emits code that compiles and computes the wrong answer looks exactly
+like a working decompiler until someone runs it.
 
 ## License
 

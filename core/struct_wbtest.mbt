@@ -207,3 +207,31 @@ test "struct: values cross a loop edge and a block edge in one body" {
   assert_true(text.contains("t"))
   assert_eq(coverage_of(bytes), "ok")
 }
+
+// --- a conditional branch whose target is the end of the body -------------
+//
+//   (module
+//     (global $g (mut i32) (i32.const 0))
+//     (func (export "f") (param i32)
+//       block
+//         br_if 0 (i32.eqz (local.get 0))
+//         global.set $g (i32.const 1)
+//       end))
+//
+// The block's `end` is the last instruction of the body, so `br_if 0` is a
+// *conditional return*. It has to stay conditional: emitting it as an
+// unconditional `return` makes the body quit before the store, and `f(1)` then
+// leaves the global at 0 where the original leaves it at 1.
+
+///|
+test "struct: a conditional branch to the end of the body keeps its condition" {
+  let bytes = b"\x00\x61\x73\x6d\x01\x00\x00\x00\x01\x09\x02\x60\x01\x7f\x00\x60\x00\x01\x7f\x03\x03\x02\x00\x01\x06\x06\x01\x7f\x01\x41\x00\x0b\x07\x0b\x02\x01\x66\x00\x00\x03\x67\x65\x74\x00\x01\x0a\x15\x02\x0e\x00\x02\x40\x20\x00\x45\x0d\x00\x41\x01\x24\x00\x0b\x0b\x04\x00\x23\x00\x0b"
+  let text = tree_of(bytes)
+  // The condition survives, and it guards the return rather than being dropped.
+  assert_true(text.contains("if (i32.eqz(local 0)) {"))
+  assert_true(text.contains("return ()"))
+  // The statement after the conditional return is still there: it is what runs
+  // when the branch is not taken.
+  assert_true(text.contains("global 0 = i32.const 1"))
+  assert_eq(coverage_of(bytes), "ok")
+}
