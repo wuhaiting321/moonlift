@@ -141,6 +141,12 @@ pub fn disassemble_ops(m : Module) -> String raise ReadFail {
 ///|
 /// Per-module decoding statistics: the numbers quoted in the README and in the
 /// competition submission.
+///
+/// Two groups, decode and control flow. They are printed together because a
+/// reader asking "how big is this module" wants both halves — the instruction
+/// count says how much code there is, the block/loop count says how tangled it
+/// is — and because keeping them one command means one invocation in
+/// `demo.sh`.
 pub fn disassemble_stats(m : Module) -> String raise ReadFail {
   let mut bodies : Int32 = 0
   let mut instrs : Int32 = 0
@@ -181,6 +187,10 @@ pub fn disassemble_stats(m : Module) -> String raise ReadFail {
   for n in notes {
     b.write_string("\{n}\n")
   }
+  // The control-flow block. Aggregate numbers only: `disasm --cfg` prints the
+  // graphs themselves, and duplicating them here would make `--stats` unreadable
+  // on the real 20 KB artifact.
+  b.write_string(cfg_summary_text(m))
   b.to_string()
 }
 

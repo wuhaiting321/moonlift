@@ -25,26 +25,34 @@
     i32.const 400)
 
   ;; Loop with a counter, a conditional exit and a back edge: the canonical
-  ;; irreducible-looking shape that is actually reducible.
+  ;; irreducible-looking shape that is actually reducible. `br_if $exit` leaves
+  ;; the block wrapping the loop — that is what a `break` inside a `for`
+  ;; compiles to — and `br $continue` is the back edge itself.
+  ;;
+  ;; An earlier revision put the `br_if` inside an `if` and wrote `br 1`, which
+  ;; resolves to the *loop* label, not to the block: the function looped forever
+  ;; for every input. The control-flow graph made that visible (the exit block
+  ;; came out unreachable), which is why this fixture now branches from the loop
+  ;; body directly.
   (func $sum_to (export "sum_to") (param $n i32) (result i32)
     (local $acc i32)
     (local $i i32)
-    loop $continue
-      local.get $i
-      local.get $n
-      i32.ge_s
-      if
-        br 1
+    block $exit
+      loop $continue
+        local.get $i
+        local.get $n
+        i32.ge_s
+        br_if $exit
+        local.get $acc
+        local.get $i
+        i32.add
+        local.set $acc
+        local.get $i
+        i32.const 1
+        i32.add
+        local.set $i
+        br $continue
       end
-      local.get $acc
-      local.get $i
-      i32.add
-      local.set $acc
-      local.get $i
-      i32.const 1
-      i32.add
-      local.set $i
-      br $continue
     end
     local.get $acc)
 

@@ -2,7 +2,7 @@
 
 This file is normative. If the code and this document disagree, that is a bug in one of them.
 
-Version: 0.1.0 (stage S3). Sections marked *(S10)* are filled in as the corresponding stage lands;
+Version: 0.1.0 (stage S4). Sections marked *(S10)* are filled in as the corresponding stage lands;
 what is written below is already true of the shipped code.
 
 ---
@@ -22,11 +22,11 @@ what is written below is already true of the shipped code.
 | Tables | any number, `funcref` only | `externref` tables | `E101` |
 | Imports | function imports only (S3 onward, surfaced as a `Host` trait whose default method traps) | memory/table/global imports | `E107` |
 | Data / element segments | active, table/memory 0, i32 constant offset | passive segments, element expressions | `E109` |
-| Control flow | reducible CFGs (covers what C/Rust compilers emit) | irreducible CFGs | `E108` |
+| Control flow | reducible CFGs — and every CFG structured wasm can express is reducible; measured 0 irreducible in 78 bodies | irreducible CFGs (reachable only through a hand-built graph, not through wasm) | `E108` |
 
 **Status.** Everything down to "instructions with an unknown operand length" is implemented and
-tested (S2 = container, S3 = instruction decoder + `disasm`). Control-flow structuring and code
-generation are contracts for S4–S7.
+tested (S2 = container, S3 = instruction decoder + `disasm`, S4 = control-flow graph). Control-flow
+*structuring* and code generation are contracts for S6–S7.
 
 **Instruction-level rule: a wrong *length* stops, a wrong *value* is reported.** An opcode whose
 operand size we do not know (`0xFD` SIMD, `0xFE` atomics) cannot be skipped, because guessing would
@@ -45,6 +45,21 @@ function end, which is why the two decoders' per-body instruction counts agree e
 `v128` types, multi-value signatures, huge local counts and (later) unimplemented opcodes are all
 *reported* by `info` and *refused per function* by the code generator. Refusing at the container
 layer would hide which function is the problem; refusing silently would be worse.
+
+**Control-flow graph contract.** A block is a half-open range of *real* instructions: `end` and
+`else` close a range and are never blocks of their own, and `if` is a real instruction because it has
+two successors. The function's own `end` is not in the stream (§ above), so a body of `n` instructions
+ends at `n` and a fall-through off the end is an edge to a virtual `exit` block at index `n`, as are
+`return` and a branch to the function's own label. Unreachable blocks — code after an unconditional
+`br` — are **kept and marked**, not deleted: a decompiler that silently drops code cannot be audited,
+and the marker is what makes the reason visible (`disasm --cfg` prints `(unreachable)`).
+
+**Reducibility is a guard, and it is honest about never firing.** Structured wasm branches only to
+labels of enclosing constructs, so every CFG it can express is reducible; the Hecht–Ullman test in
+`core/cfg.mbt` therefore returns "reducible" for all 78 complete bodies of the real MoonBit artifact
+and for every fixture. The analysis exists because the Relooper needs to *know* that, and because a
+false positive would be a structuring bug that no test would otherwise catch. It is tested on
+hand-written successor matrices, since a wasm fixture cannot produce the input.
 
 ## 2. Error codes
 
@@ -121,6 +136,18 @@ and is refused rather than approximated.
     function-final `end`, index bounds, memarg alignment) but not *types*: `i32.add` on two `f32`
     operands decodes without complaint. The typed stack simulation of S5 is what makes that an
     error, and until it lands this is a real gap, stated here rather than implied.
+11. **Loops are identified at block granularity.** When two nested loops share a header block (their
+    first instruction is the same, which happens when the inner loop opens immediately), the analysis
+    reports one loop, not two: a block is the smallest unit, and both headers *are* that block. This
+    does not affect correctness of the emitted code — the Relooper works on blocks — but it means
+    "loops: 20" is a count of distinct block headers, not of `loop` keywords in the source. The
+    alternative (per-instruction loop identity) would add a second, finer graph that nothing consumes.
+12. **Dead code is analysed, not executed.** A block reachable only through a branch that no path
+    takes is still walked by the dominator and loop passes; what marks it is the DFS from the entry,
+    not a separate liveness analysis. Blocks after `unreachable` are the common case.
+13. **A partial body has no graph.** `disasm --cfg` prints `skipped: stopped at byte N ...` for the
+    one SIMD helper instead of inventing blocks from half a function. The instruction listing still
+    shows everything it decoded; only the graph refuses.
 
 ## 5. Reproduce every claim
 
@@ -130,8 +157,9 @@ bash script/check.sh
 
 Every number quoted in the README or in the submission form must be reproducible by a command in
 `script/`; otherwise it does not belong in the document. The script currently verifies: formatting,
-three-target `moon check`, 58 unit tests on two targets, CLI usage paths, 8 fixtures decoded,
+three-target `moon check`, 95 unit tests on two targets, CLI usage paths, 8 fixtures decoded,
 18 malformed fixtures rejected with code + offset (7 of them at the instruction layer, each
-reporting the code written in its filename), byte-identical `info` **and** `disasm --ops` output
-across `wasm-gc`, `js` and `wasm`, and a cross-check of every decoded mnemonic against wabt
+reporting the code written in its filename), byte-identical `info`, `disasm --ops` **and**
+`disasm --cfg` output across `wasm-gc`, `js` and `wasm`, a graph for every fixture with no body
+coming out irreducible, and a cross-check of every decoded mnemonic against wabt
 (`4,386 matched, 0 mismatched, 62 not attempted`).

@@ -7,12 +7,13 @@ MoonBit package that `moon build` accepts and that behaves like the original mod
 `wasm`, `wasm-gc` and `js`. Correctness is not asserted — it is measured: every decompiled module
 is differentially tested against a reference engine (Node's `WebAssembly`) on random inputs.
 
-> **Status: S3 (instruction layer).** The byte reader, the section decoder and the MVP instruction
-> decoder are implemented: 76 white-box tests, 8 fixtures decoded, 18 malformed fixtures rejected
-> with a stable error code and a byte offset. `moonlift info` describes a module; `moonlift disasm`
-> decodes every function body to `.wat`. The decoder is cross-checked against wabt, an independent
-> implementation: **4,386 of 4,386 reachable instructions agree, 0 mismatches**, with 62 instructions
-> in one SIMD helper deliberately not attempted.
+> **Status: S4 (control-flow analysis).** The byte reader, the section decoder, the MVP instruction
+> decoder and the control-flow graph are implemented: 95 white-box tests, 8 fixtures decoded,
+> 18 malformed fixtures rejected with a stable error code and a byte offset. `moonlift info`
+> describes a module; `moonlift disasm` decodes every function body to `.wat`; `disasm --cfg` prints
+> basic blocks, dominators, natural loops and a reducibility verdict. The decoder is cross-checked
+> against wabt, an independent implementation: **4,386 of 4,386 reachable instructions agree, 0
+> mismatches**, with 62 instructions in one SIMD helper deliberately not attempted.
 > `decompile` and `verify` are not implemented yet — see [Roadmap](#roadmap) and
 > [BOUNDARY.md](BOUNDARY.md).
 
@@ -41,7 +42,7 @@ That is a statement about *searchable surface*, not a claim that nobody on earth
 moon build --target wasm-gc          # build the CLI
 moon run cmd/main --target wasm-gc -- help
 moon run cmd/main --target wasm-gc -- info   path/to/module.wasm
-moon run cmd/main --target wasm-gc -- disasm path/to/module.wasm [--ops|--stats]
+moon run cmd/main --target wasm-gc -- disasm path/to/module.wasm [--ops|--stats|--cfg]
 moon run cmd/main --target wasm-gc -- decompile path/to/module.wasm -o out/
 moon run cmd/main --target wasm-gc -- verify path/to/module.wasm -n 200
 ```
@@ -78,7 +79,7 @@ notes
 ```
 
 `disasm` decodes bodies; `--stats` prints the numbers used to verify the decoder, `--ops` prints one
-instruction per line for the wabt comparison:
+instruction per line for the wabt comparison, and `--cfg` prints the control-flow graph:
 
 ```
 $ moon run cmd/main --target wasm-gc -- disasm corpus/good/moonbit_fib.wasm --stats
@@ -87,6 +88,27 @@ instructions    3878
 max nesting     6
 partial bodies  1
   f59 $_M0MPC15array10FixedArray32unsafe__blit__from__string__simd: stopped at byte 6298: 0xfd/0x00 (simd)
+blocks          439
+edges           583
+loops           20
+loop depth      1
+reducible       78 of 79 bodies
+irreducible     0
+skipped         1
+```
+
+`--cfg` on the four-way dispatch fixture, which is the shape a `switch` compiles to — one `br_table`
+leaving three different block nests, so block 0 has three successors:
+
+```
+$ moon run cmd/main --target wasm-gc -- disasm corpus/good/control.wasm --cfg
+func 0 $f0 (param i32) (result i32)
+  blocks 4  edges 6  loops 0  reducible yes
+  b0   ops 0..2       succ b1 b2 b3
+  b1   ops 2..4       succ exit
+  b2   ops 4..6       succ exit
+  b3   ops 6..7       succ exit
+  idom b1<-b0  b2<-b0  b3<-b0
 ```
 
 Exit codes: `0` success · `2` usage error · `3` input rejected (`E0xx`/`E1xx`) · `4` input
@@ -101,7 +123,8 @@ grep for it.
 | `core/instr.mbt` | instruction IR: 29 shapes covering the 172 MVP opcodes | done |
 | `core/decode_instr.mbt` | instruction decoder with structure and index validation | done |
 | `core/disasm.mbt` | `.wat`-style listing, machine listing, decode statistics | done |
-| `analyze/` | CFG, dominators, reducibility, typed stack simulation | S4–S5 |
+| `core/cfg.mbt` | basic blocks, dominators, natural loops, reducibility | done |
+| `analyze/` | typed stack simulation | S5 |
 | `reloop/` | structuring of irreducible control flow | S6 |
 | `emit/` | MoonBit code generation + prelude | S7 |
 | `cmd/main/` | CLI shell (no logic) | S0, S2 |
@@ -115,8 +138,8 @@ grep for it.
 | S0 | scaffold, diagnostics, CLI skeleton, CI script |
 | S1 | byte reader + LEB128 with offset-anchored errors |
 | S2 | section decoding, `moonlift info` |
-| S3 | 172 MVP instructions, `.wat`-style dump, wabt cross-check ← **you are here** |
-| S4 | CFG + reducibility analysis |
+| S3 | 172 MVP instructions, `.wat`-style dump, wabt cross-check |
+| S4 | CFG + dominators + natural loops + reducibility ← **you are here** |
 | S5 | typed stack simulation (expression recovery + fallback) |
 | S6 | Relooper for irreducible flow |
 | S7 | MoonBit emitter, first end-to-end decompile |
@@ -131,10 +154,12 @@ grep for it.
 bash script/check.sh
 ```
 
-Runs format check, `moon check` on `wasm-gc`/`js`/`wasm`, 76 unit tests on two targets, CLI smoke
+Runs format check, `moon check` on `wasm-gc`/`js`/`wasm`, 95 unit tests on two targets, CLI smoke
 tests, every corpus fixture through the real binary, the code-layer malformed samples (each must
-report the error code written in its filename), a cross-backend comparison requiring `info` and
-`disasm --ops` output to be byte-identical on all three targets, and the decoder against wabt.
+report the error code written in its filename), a cross-backend comparison requiring `info`,
+`disasm --ops` and `disasm --cfg` output to be byte-identical on all three targets, the control-flow
+graph on every fixture (no body may come out irreducible, and the `br_table` dispatch is pinned to
+its exact successor line), and the decoder against wabt.
 
 ## License
 

@@ -152,6 +152,39 @@ else
   fi
 fi
 
+step "cfg: every body yields a block graph"
+for f in corpus/good/*.wasm; do
+  if cli disasm "$f" --cfg >/dev/null; then :; else
+    printf 'FAIL %s --cfg\n' "$f"; fail=1
+  fi
+done
+printf 'ok   all good fixtures produce a graph\n'
+
+cfg=$(cli disasm corpus/good/moonbit_fib.wasm --cfg)
+if printf '%s' "$cfg" | grep -q '^  skipped: stopped at byte .*simd'; then
+  printf 'ok   the partial body is reported, not guessed at\n'
+else
+  printf 'FAIL the partial body is not reported in --cfg\n'; fail=1
+fi
+if printf '%s' "$cfg" | grep -q 'reducible no'; then
+  printf 'FAIL structured wasm produced an irreducible graph\n'; fail=1
+else
+  printf 'ok   every complete body in the real artifact is reducible\n'
+fi
+
+# The four-way dispatch in control.wasm is the shape a `switch` compiles to: one
+# `br_table` leaving three different block nests, so its first block has three
+# successors and the graph has three exit edges. Pinning the exact line is
+# deliberate — this is the number a regression in target resolution would move.
+out=$(cli disasm corpus/good/control.wasm --cfg)
+if printf '%s' "$out" | grep -q '^  b0   ops 0..2       succ b1 b2 b3$'; then
+  printf 'ok   br_table dispatch resolves to three successors\n'
+else
+  printf 'FAIL br_table dispatch\n'
+  printf '%s\n' "$out" | head -8
+  fail=1
+fi
+
 step "cross-target: same fixture, three backends, identical report"
 for f in corpus/good/fib.wasm corpus/good/globals.wasm corpus/good/moonbit_fib.wasm; do
   a=$(moon run cmd/main --target wasm-gc -- info "$f" 2>/dev/null)
@@ -174,6 +207,21 @@ for f in corpus/good/arith.wasm corpus/good/control.wasm corpus/good/moonbit_fib
     printf 'ok   %s decodes identically on wasm-gc / js / wasm\n' "$f"
   else
     printf 'FAIL %s instruction stream differs across backends\n' "$f"
+    fail=1
+  fi
+done
+
+step "cross-target: identical control-flow graph"
+# The CFG sorts sets (loop nodes, tails) before printing, and an unstable sort
+# would show up here as a backend-dependent byte difference.
+for f in corpus/good/control.wasm corpus/good/moonbit_fib.wasm; do
+  a=$(moon run cmd/main --target wasm-gc -- disasm "$f" --cfg 2>/dev/null)
+  b=$(moon run cmd/main --target js -- disasm "$f" --cfg 2>/dev/null)
+  c=$(moon run cmd/main --target wasm -- disasm "$f" --cfg 2>/dev/null)
+  if [ "$a" = "$b" ] && [ "$a" = "$c" ] && [ -n "$a" ]; then
+    printf 'ok   %s graphs identically on wasm-gc / js / wasm\n' "$f"
+  else
+    printf 'FAIL %s control-flow graph differs across backends\n' "$f"
     fail=1
   fi
 done

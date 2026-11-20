@@ -24,7 +24,7 @@ fn usage_text() -> String {
   let b = StringBuilder()
   b.write_string(@core.banner())
   b.write_string(
-    "\n\nUsage:\n  moonlift <command> [options]\n\nCommands:\n  info <file.wasm>              print module structure\n  decompile <file.wasm> -o <dir> emit MoonBit sources into <dir>\n  verify <file.wasm> [-n N]     differential test against a reference engine\n  help                          show this text\n  version                       print version\n\nExit codes: 0 ok, 2 usage, 3 input rejected, 4 input unreadable.\n",
+    "\n\nUsage:\n  moonlift <command> [options]\n\nCommands:\n  info <file.wasm>              print module structure\n  disasm <file.wasm> [--ops|--stats|--cfg]\n                                print the decoded listing, or the control-flow graph\n  decompile <file.wasm> -o <dir> emit MoonBit sources into <dir>\n  verify <file.wasm> [-n N]     differential test against a reference engine\n  help                          show this text\n  version                       print version\n\nExit codes: 0 ok, 2 usage, 3 input rejected, 4 input unreadable.\n",
   )
   b.to_string()
 }
@@ -128,7 +128,8 @@ fn run_info(args : Array[String]) -> Int32 {
 }
 
 ///|
-/// `disasm <file> [--ops|--stats]`: decode every function body and print it.
+/// `disasm <file> [--ops|--stats|--cfg]`: decode every function body and print
+/// it.
 ///
 /// Unlike `info`, this can fail on a body the decoder rejects, and that is the
 /// point: `info` answers "what is in this file", `disasm` answers "what does the
@@ -139,13 +140,18 @@ fn run_disasm(args : Array[String]) -> Int32 {
     return EXIT_USAGE
   }
   let path = args[1]
-  let mut mode = 0 // 0 listing, 1 ops, 2 stats
+  // 0 listing, 1 ops, 2 stats, 3 control-flow graph. Last flag wins, so
+  // `--stats --cfg` is the same as `--cfg` rather than an error: a reviewer
+  // pasting flags should not have to think about ordering.
+  let mut mode = 0
   let mut i = 2
   while i < args.length() {
     if args[i] == "--ops" {
       mode = 1
     } else if args[i] == "--stats" {
       mode = 2
+    } else if args[i] == "--cfg" {
+      mode = 3
     }
     i = i + 1
   }
@@ -166,6 +172,8 @@ fn run_disasm(args : Array[String]) -> Int32 {
             @core.disasm_ops_text(m)
           } else if mode == 2 {
             @core.disasm_stats_text(m)
+          } else if mode == 3 {
+            @core.cfg_text_result(m, path)
           } else {
             @core.disasm_text(m, path)
           }
