@@ -1,0 +1,12 @@
+.DS_Store
+Thumbs.db
+_build/
+target/
+target
+.mooncakes/
+.moonagent/
+.idea/
+.vscode/
+*.log
+node_modules/
+pkg.generated.mbti

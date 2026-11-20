@@ -1,0 +1,6 @@
+import {
+  "moonlift/moonlift/core",
+  "moonbitlang/core/env",
+}
+
+pkgtype(kind: "executable")
