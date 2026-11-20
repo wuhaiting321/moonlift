@@ -24,6 +24,7 @@
 | native 后端 | 不可用：无 MSVC；`--target llvm` 需 nightly（缺 `prelude.mi`） | 验证矩阵改为 **wasm / wasm-gc / js 三端实跑**；native 降级为「环境依赖」，不阻塞验收 |
 | Node | v22.22.2 | 差分测试的**参考实现**（`WebAssembly.instantiate`）+ 三端运行载体（含 `node:wasi`） |
 | wabt（npm 纯 JS 版） | **可用**：`npm i wabt` → wat↔wasm 双向；41 字节 `add` 模块汇编并执行通过 | ① 手写 `.wat` 夹具可汇编 ② **解码器可与 wabt `wasm2wat` 逐指令对拍** |
+| 文件读取 | `moonbitlang/x@0.5.6` 的 `fs` 包在 wasm-gc / js / wasm 三端实测可读文件（`read_file_to_bytes` 三端均返回 508 字节） | CLI 有真实 IO；首次构建需联网拉包，index 本地已到 0.5.6（0.5.8 需 `moon update`，当前会超时） |
 | clang / emcc / rustc | 缺失（**已不构成阻塞**） | 无需 C 工具链：语料 = MoonBit 自身 MVP 产物 + 手写 wat + 可选公开 prebuilt wasm |
 
 官方验收 6 条（原文）：MoonBit 为主 / 仓库公开 / 能够运行 / 工作有效 / 开源合规 / AI 可解释。

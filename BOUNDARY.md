@@ -2,7 +2,7 @@
 
 This file is normative. If the code and this document disagree, that is a bug in one of them.
 
-Version: 0.1.0 (stage S0). Sections marked *(S10)* are filled in as the corresponding stage lands;
+Version: 0.1.0 (stage S1). Sections marked *(S10)* are filled in as the corresponding stage lands;
 what is written below is already true of the shipped code.
 
 ---
@@ -19,8 +19,9 @@ what is written below is already true of the shipped code.
 | Imports | function imports only, surfaced as a `Host` trait whose default method traps | memory/table/global imports | `E107` |
 | Control flow | reducible CFGs (covers what C/Rust compilers emit) | irreducible CFGs | `E108` |
 
-**Status.** Only the container row is implemented today (S0 = taxonomy + CLI). Rows are the
-contract for S3–S7, not a description of current capability.
+**Status.** The container row and the LEB128/length discipline it depends on are implemented
+(S1 = reader + UTF-8 + diagnostics). Everything below "value types" is still a contract for
+S3–S7, not a description of current capability.
 
 ## 2. Error codes
 
@@ -67,7 +68,9 @@ propagation, and the order of traps versus side effects.
    because correctness is judged against a reference engine, not against a native build.
 3. **No portable exit code.** MoonBit exposes no `exit()`; the CLI echoes `moonlift: exit N` and the
    scripts parse it. When a portable API appears, this note goes away.
-4. **Nullary enum variants cannot be constructed across packages** in toolchain 0.1.20261020
+4. **First build needs the network** to fetch `moonbitlang/x@0.5.6` (file IO). The local registry
+   index currently caps at 0.5.6; `moon update` times out on this network, so the pin is deliberate.
+5. **Nullary enum variants cannot be constructed across packages** in toolchain 0.1.20261020
    (`error 4036: cannot create values of the read-only type`). Tests for the taxonomy therefore live
    in `core/*_wbtest.mbt`. If the limitation is lifted, they can move to black-box tests.
 

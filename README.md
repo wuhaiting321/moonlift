@@ -7,9 +7,10 @@ MoonBit package that `moon build` accepts and that behaves like the original mod
 `wasm`, `wasm-gc` and `js`. Correctness is not asserted — it is measured: every decompiled module
 is differentially tested against a reference engine (Node's `WebAssembly`) on random inputs.
 
-> **Status: S0 (scaffold).** The CLI skeleton, the error taxonomy and the test harness layout exist.
-> Decoding starts at S1. Nothing in this repository claims to decompile anything yet — see
-> [Roadmap](#roadmap) and [BOUNDARY.md](BOUNDARY.md).
+> **Status: S1 (byte layer).** The error taxonomy, the LEB128/fixed-width reader and a strict UTF-8
+> validator are implemented and covered by 23 white-box tests. Section decoding starts at S2.
+> Nothing in this repository claims to decompile anything yet — see [Roadmap](#roadmap) and
+> [BOUNDARY.md](BOUNDARY.md).
 
 ---
 
@@ -47,7 +48,7 @@ MoonBit has no portable `exit()`, so the code is echoed as `moonlift: exit N`; s
 
 | Path | Role | Stage |
 |---|---|---|
-| `core/` | byte reader, LEB128, diagnostics, error taxonomy | S0–S1 |
+| `core/` | byte reader, LEB128, UTF-8, diagnostics, error taxonomy | done |
 | `model/` | module IR + the 172 MVP instructions | S2–S3 |
 | `decode/` | section and instruction decoding | S2–S3 |
 | `analyze/` | CFG, dominators, reducibility, typed stack simulation | S4–S5 |
@@ -62,8 +63,8 @@ MoonBit has no portable `exit()`, so the code is echoed as `moonlift: exit N`; s
 
 | Stage | Deliverable |
 |---|---|
-| S0 | scaffold, diagnostics, CLI skeleton, CI script ← **you are here** |
-| S1 | byte reader + LEB128 with offset-anchored errors |
+| S0 | scaffold, diagnostics, CLI skeleton, CI script |
+| S1 | byte reader + LEB128 with offset-anchored errors ← **you are here** |
 | S2 | section decoding, `moonlift info` |
 | S3 | 172 MVP instructions, `.wat`-style dump for self-check |
 | S4 | CFG + reducibility analysis |
