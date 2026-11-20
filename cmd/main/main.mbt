@@ -265,6 +265,101 @@ fn run_decompile(args : Array[String]) -> Int32 {
     println("moonlift: 'decompile' needs an output directory (-o <dir>)")
     return EXIT_USAGE
   }
+  match write_package(path, out_dir, runtime) {
+    None => EXIT_UNREADABLE
+    Some((report, _)) => {
+      println(@core.gen_summary_text(report, path, out_dir))
+      EXIT_OK
+    }
+  }
+}
+
+///|
+/// `verify` writes the same package as `decompile`, plus `calls.tsv`: the list of
+/// calls `script/verify.sh` should make against both the original module and the
+/// generated one. The comparison itself runs outside MoonBit, because the tool
+/// has no way to execute a wasm module (or to start Node) from inside a
+/// `wasm-gc` or `js` process — and the whole point is to compare against an
+/// implementation that is not this one.
+fn run_verify(args : Array[String]) -> Int32 {
+  if args.length() < 2 {
+    println("moonlift: 'verify' needs a path to a .wasm file")
+    return EXIT_USAGE
+  }
+  let path = args[1]
+  let mut out_dir = ""
+  let mut runtime : String? = None
+  let mut per_func = 16
+  let mut small = false
+  let mut i = 2
+  while i < args.length() {
+    if args[i] == "-o" && i + 1 < args.length() {
+      out_dir = args[i + 1]
+      i = i + 1
+    } else if args[i] == "--runtime" && i + 1 < args.length() {
+      runtime = Some(args[i + 1])
+      i = i + 1
+    } else if args[i] == "--small" {
+      small = true
+    } else if args[i] == "-n" && i + 1 < args.length() {
+      per_func = match parse_count(args[i + 1]) {
+        Some(n) => n
+        None => per_func
+      }
+      i = i + 1
+    }
+    i = i + 1
+  }
+  if out_dir == "" {
+    println("moonlift: 'verify' needs an output directory (-o <dir>)")
+    return EXIT_USAGE
+  }
+  match write_package(path, out_dir, runtime) {
+    None => EXIT_UNREADABLE
+    Some((report, m)) => {
+      let plan = @core.plan_calls(m, report.emitted, per_func, small)
+      write_text(out_dir + "/calls.tsv", @core.plan_text(plan))
+      println(@core.plan_summary_text(plan, path, out_dir))
+      println(@core.gen_summary_text(report, path, out_dir))
+      EXIT_OK
+    }
+  }
+}
+
+///|
+/// A non-negative decimal integer, or `None`.
+///
+/// `-n` takes a call count, so this is deliberately narrower than a general
+/// number parser: digits only, no sign, no exponent. Anything else keeps the
+/// default rather than failing the command.
+fn parse_count(s : String) -> Int32? {
+  if s.length() == 0 {
+    return None
+  }
+  let mut n = 0
+  let mut ok = true
+  for c in s {
+    if c >= '0' && c <= '9' {
+      n = n * 10 + (c.to_int() - 48)
+    } else {
+      ok = false
+    }
+  }
+  if ok {
+    Some(n)
+  } else {
+    None
+  }
+}
+
+///|
+/// Decode, generate and write. The two commands that produce a package differ
+/// only in what they do with the report, so the writing lives here once.
+fn write_package(
+  path : String,
+  out_dir : String,
+  runtime : String?,
+) -> (@core.GenReport, @core.Module)? {
   let runtime_path = match find_runtime(runtime) {
     Some(p) => p
     None => {
@@ -272,13 +367,13 @@ fn run_decompile(args : Array[String]) -> Int32 {
       println(
         "  run from the repository root, or pass --runtime <path-to-runtime.mbt>",
       )
-      return EXIT_UNREADABLE
+      return None
     }
   }
   let data = match read_input(path) {
     None => {
       println("moonlift: cannot read '\{path}'")
-      return EXIT_UNREADABLE
+      return None
     }
     Some(d) => d
   }
@@ -286,7 +381,7 @@ fn run_decompile(args : Array[String]) -> Int32 {
     Err(d) => {
       println("moonlift: rejected '\{path}'")
       println("  \{d.render_verbose()}")
-      return EXIT_REJECTED
+      return None
     }
     Ok(m) => m
   }
@@ -294,7 +389,7 @@ fn run_decompile(args : Array[String]) -> Int32 {
     Some(t) => t
     None => {
       println("moonlift: cannot read '\{runtime_path}'")
-      return EXIT_UNREADABLE
+      return None
     }
   }
   let report = @core.emit_package(m)
@@ -303,22 +398,17 @@ fn run_decompile(args : Array[String]) -> Int32 {
       (@fs.create_dir(out_dir) catch {
         _ => {
           println("moonlift: cannot create '\{out_dir}'")
-          return EXIT_UNREADABLE
+          return None
         }
       }) {
       _ => ()
     }
   }
-  let names : Array[String] = []
   for f in report.files {
-    names.push(f.name)
     write_text(out_dir + "/" + f.name, f.text)
   }
   write_text(out_dir + "/runtime.mbt", runtime_src)
-  names.push("runtime.mbt")
-  let _ = names
-  println(@core.gen_summary_text(report, path, out_dir))
-  EXIT_OK
+  Some((report, m))
 }
 
 ///|
@@ -355,10 +445,7 @@ fn run(args : Array[String]) -> Int32 {
     "info" => run_info(args)
     "disasm" => run_disasm(args)
     "decompile" => run_decompile(args)
-    "verify" => {
-      println("moonlift: 'verify' is not implemented yet (planned stage S8)")
-      EXIT_USAGE
-    }
+    "verify" => run_verify(args)
     _ => {
       println("moonlift: unknown command '\{cmd}'")
       println(usage_text())

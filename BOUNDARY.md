@@ -2,7 +2,7 @@
 
 This file is normative. If the code and this document disagree, that is a bug in one of them.
 
-Version: 0.1.0 (stage S7). Sections marked *(S10)* are filled in as the corresponding stage lands;
+Version: 0.1.0 (stage S8). Sections marked *(S10)* are filled in as the corresponding stage lands;
 what is written below is already true of the shipped code.
 
 ---
@@ -306,13 +306,32 @@ decompiler.
 propagation, `min(0, -0) = -0`, ties-to-even) are not the host language's, and every one of them was
 measured before being written into `runtime/runtime.mbt`.
 
+### D11 · The `start` section becomes a function the host calls
+
+**Deviation.** A module with a `start` section gets `pub fn moonlift_init() -> Unit` in
+`module.mbt`, and the host calls it once before using any export. A module without one gets the same
+empty function, so the call site never has to ask.
+
+**Reason.** Wasm runs the start function at instantiation, and a MoonBit package has no
+instantiation step. Doing nothing would leave the module in a state the original never has — for
+`globals.wasm` the difference is visible immediately, because its `start` sets the global that one of
+its exports returns.
+
+**Impact.** One extra call at startup, and one obligation on the host that wasm did not impose.
+`globals.wasm` shows what it is for: its global `g4` starts at 0, its start function sets it to 1, and
+its export `f4` returns it. Without the call the generated `f4()` answers 0 where the original answers
+1 — which is why `script/verify.sh` calls `moonlift_init()` first, and why the fixture is in the
+differential run rather than the smoke tests.
+
 ## 4. Known limitations at 0.1.0
 
-1. **`verify` is not implemented yet.** `decompile` works end to end and is gated (all 9 fixtures
-   compile at zero warnings; 2 of them are executed against values the original produces under Node),
-   but the differential harness that would run *every* decompiled function on generated inputs is S8.
-   Until it exists, "behaves like the original" is a claim about the 23 pinned calls in
-   `script/smoke/`, not about the module as a whole.
+1. **The differential run covers exports, not bodies.** `script/verify.sh` compares 354 calls across
+   the 7 fixtures that do not need a host, and every one matches. What it does *not* do: reach a
+   function that is not exported (nothing can call it, but nothing proves it either), or compare
+   anything inside a module that imports a host (`imports`, `moonbit_fib`), or invent argument
+   combinations — the plan is a fixed diagonal and four anchored rows over a fixed value pool. A
+   random-input mode is possible and was deliberately not built: a failure has to be reproducible
+   from the report alone.
 2. **native backend unverified.** This machine has no MSVC and `--target llvm` requires a nightly
    toolchain (`missing prelude.mi`). Verification therefore runs on `wasm`, `wasm-gc` and `js`.
    Installing VS Build Tools makes native available; it does not change any correctness criterion,
@@ -379,7 +398,7 @@ bash script/check.sh
 
 Every number quoted in the README or in the submission form must be reproducible by a command in
 `script/`; otherwise it does not belong in the document. The script currently verifies: formatting,
-three-target `moon check`, 150 unit tests on two targets, CLI usage paths, 9 fixtures decoded,
+three-target `moon check`, 151 unit tests on two targets, CLI usage paths, 9 fixtures decoded,
 19 malformed fixtures rejected with code + offset (8 of them at the instruction layer, each
 reporting the code written in its filename — including one that decodes but does not type-check),
 byte-identical `info`, `disasm --ops`, `disasm --cfg`, `disasm --stack` **and** `disasm --struct`
@@ -403,3 +422,11 @@ emitter pass:
   (`corpus/tools/oracle.js`). Both bugs found in the emitter — a `br_if` to the end of the body
   emitted as an unconditional `return`, and a block entry value printed as `in0` with nothing binding
   it — compile cleanly and pass every structural check. Only running the code found them.
+- the differential run (`script/verify.sh`) goes further: 354 planned calls on 7 fixtures, every one
+  compared against the original, then `moon test` inside the generated package. Both counts are
+  pinned, so a loss of coverage fails the gate even when everything that *was* compared passed.
+
+`verify` itself is a plan, not a comparison: `moonlift verify` cannot run a wasm module (it is
+written in MoonBit and runs on `wasm-gc`/`js`), and comparing against a second implementation of
+ours would prove nothing. The split — plan in MoonBit, comparison in Node, orchestration in bash — is
+the smallest arrangement in which the two sides are genuinely independent.

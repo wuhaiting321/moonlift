@@ -242,3 +242,28 @@ test "runtime: unsigned comparison is not signed comparison" {
   assert_eq(i64_min_u(-1L, 1L), 1L)
   assert_eq(i64_max_s(-1L, 1L), 1L)
 }
+
+///|
+/// A `grow` past the representable size must answer -1, not trap and not ask for
+/// an array it cannot have.
+///
+/// Found by the differential harness: `memory.wasm` exports `memory.grow`, one
+/// planned call passed 2147483647, and `pages + delta` in 32 bits wrapped
+/// negative — passing the limit test and dying inside the allocation. The
+/// original module answers -1, so this was a decompiler bug that only showed up
+/// when the two implementations were compared.
+test "memory: grow refuses a size it cannot represent" {
+  let m = Memory::new(1, 65536)
+  // 2^31 - 1 pages is the call that wrapped.
+  inspect(m.grow(2147483647), content="-1")
+  // A negative delta is refused by the spec, not silently treated as a shrink.
+  inspect(m.grow(-1), content="-1")
+  // The ceiling itself: 40,000 pages is under `max_pages` but over what an
+  // `Int`-indexed array can hold, so it is refused without allocating.
+  inspect(m.grow(40000), content="-1")
+  inspect(m.size(), content="1")
+  // And a legal grow still works, returning the *old* size.
+  inspect(m.grow(0), content="1")
+  inspect(m.grow(1), content="1")
+  inspect(m.size(), content="2")
+}

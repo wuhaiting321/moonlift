@@ -463,6 +463,14 @@ pub fn i64_trunc_sat_f64_u(a : Double) -> Int64 {
 // happens to follow the array would be wrong in the worst way — silently.
 
 ///|
+
+///|
+/// The largest memory this representation can hold: 32,767 pages, just under
+/// 2 GiB. A MoonBit array is indexed by `Int`, so anything larger does not fit —
+/// `grow` reports -1 rather than dying inside an allocation.
+let page_limit : Int64 = 32767
+
+///|
 pub struct Memory {
   mut data : FixedArray[Byte]
   mut pages : Int32
@@ -485,13 +493,24 @@ pub fn Memory::size(self : Memory) -> Int32 {
 /// cannot be met. The new pages are zero-filled, as the spec requires.
 pub fn Memory::grow(self : Memory, delta : Int32) -> Int32 {
   let old = self.pages
-  if delta < 0 || old + delta > self.max_pages {
+  // Every comparison below is done in 64 bits. `grow(2147483647)` on a
+  // one-page memory is a legal call that must answer -1, and `old + delta` in
+  // 32 bits wraps to a negative number that passes a `>` test and then asks for
+  // an array with a negative length.
+  let want = old.to_int64() + delta.to_int64()
+  if delta < 0 || want > self.max_pages.to_int64() {
+    return -1
+  }
+  // A MoonBit array is indexed by `Int`, so 2 GiB is the ceiling here as well as
+  // in practice. Past it the honest answer is the one wasm gives when the host
+  // cannot provide the memory: -1, not a trap and not an allocation that dies.
+  if want > page_limit {
     return -1
   }
   if delta == 0 {
     return old
   }
-  let fresh = FixedArray::make((old + delta) * 65536, b'\x00')
+  let fresh = FixedArray::make(want.to_int() * 65536, b'\x00')
   let mut i = 0
   let n = old * 65536
   while i < n {
@@ -499,13 +518,16 @@ pub fn Memory::grow(self : Memory, delta : Int32) -> Int32 {
     i = i + 1
   }
   self.data = fresh
-  self.pages = old + delta
+  self.pages = want.to_int()
   old
 }
 
 ///|
 fn Memory::check(self : Memory, a : Int32, n : Int32) -> Unit {
-  if a < 0 || a + n > self.data.length() {
+  // 64-bit again: `a + n` for an address near 2^31 wraps negative and would wave
+  // through an access that the spec says traps.
+  let end = a.to_int64() + n.to_int64()
+  if a < 0 || end > self.data.length().to_int64() {
     trap("out of bounds memory access")
   }
 }

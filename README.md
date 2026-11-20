@@ -8,7 +8,7 @@ MoonBit package that `moon build` accepts and that behaves like the original mod
 taken from the **original** module running under Node's `WebAssembly`, and the generated package has
 to reproduce them.
 
-> **Status: S7 (MoonBit code generation).** The pipeline runs end to end: bytes → sections →
+> **Status: S8 (differential verification).** The pipeline runs end to end: bytes → sections →
 > instructions → basic blocks → typed expressions → nested `while` / `if` / `match` → **MoonBit
 > source that compiles**. 150 white-box tests, 9 fixtures decoded, 19 malformed fixtures rejected
 > with a stable error code and a byte offset.
@@ -23,8 +23,9 @@ to reproduce them.
 > warnings**, and two of them are executed and compared against the original module in Node.
 > The decoder is cross-checked against wabt, an independent implementation: **4,423 of 4,423
 > reachable instructions agree, 0 mismatches**, with 62 instructions in one SIMD helper deliberately
-> not attempted. `verify` is not implemented yet — see [Roadmap](#roadmap) and
-> [BOUNDARY.md](BOUNDARY.md).
+> not attempted. `verify` plans the calls, `script/verify.sh` runs them against the original in Node and
+> compares: **354 calls, 354 matched, 0 failed** across the 7 fixtures that do not need a host — see
+> [Roadmap](#roadmap) and [BOUNDARY.md](BOUNDARY.md).
 
 ---
 
@@ -354,6 +355,59 @@ nothing reads, and a `mut` nothing stores to. The emitter now names them `_p0` /
 declares `mut` only where something is written, which is why the 9 generated packages are warning-
 free rather than merely error-free.
 
+## verify
+
+```bash
+$ bash script/verify.sh
+fixture            calls matched skipped  note
+arith                 76      76     130  -
+control               85      85       1  -
+fib                   21      21       0  -
+globals               17      17       0  -
+imports                3       -       -  the original needs a host: ...
+memory                49      49      24  -
+moonbit_fib            0       -       -  no exported function to call
+stack                 92      92       6  -
+table                 14      14       0  -
+
+TOTAL                354     354     164
+calls compared: 354, matched: 354, skipped (trap/NaN): 164, failed: 0
+verify: every compared call matched the original
+```
+
+`moonlift verify foo.wasm -o out/` writes the same package as `decompile` plus `calls.tsv`, the list
+of calls to make; `script/verify.sh` asks Node to run each of them on the **original** module
+(`corpus/tools/oracle.js`), writes the answers into a test file inside the generated package, and
+runs `moon test` on it. The comparison is between two implementations, not one implementation
+against itself.
+
+**How a value is compared.** Integers as decimal text. Floats as their **bit patterns**, because a
+decimal float literal has to survive a printer on both sides and the things that must not change are
+the sign of a zero and a NaN payload. A call whose original traps, or returns a NaN, is *skipped* and
+counted in its own column: a trap has no value to compare, and a NaN produced by arithmetic may
+legitimately differ in payload between V8 and a MoonBit runtime. 164 of 518 calls are in that
+bucket, almost all of them `arith`'s `$i32_bin`, which runs every binary operator in sequence and
+therefore divides by zero for any argument pair containing one.
+
+**Two fixtures are excluded, and the report says so.** `imports` and `moonbit_fib` call into a host
+(`env.fd_write` and friends); neither side has one, so the original cannot even be instantiated.
+Their generated packages still compile, which the previous step proves, and their imports are
+trapping stubs.
+
+**One fixture gets a smaller argument pool** (`fib`). Recursive Fibonacci does not return for
+`fib(255)`, and waiting for it would say nothing about the decompiler. `--small` cuts the pool to
+five values, and the timeout in the harness reports a call the original never finished rather than
+silently dropping it.
+
+**What it found.** The first full run failed on `memory`, in `Memory::grow`: `pages + delta` was
+computed in 32 bits, so `memory.grow(2147483647)` wrapped negative, passed the limit check, and died
+inside an allocation the size of a small country. The original answers `-1`. That is a bug in the
+runtime library, not in the code generator, and no amount of `moon check` would have found it —
+`runtime/runtime_wbtest.mbt` now pins it. The same 32-bit assumption sat in `Memory::check`, which
+added the access width to the address — a load at `0x7FFFFFFE` would have wrapped into range instead
+of trapping; that one was found by reading the neighbouring function while fixing the first, and is
+fixed the same way, in 64 bits.
+
 ## Repository layout
 
 | Path | Role | Stage |
@@ -366,6 +420,7 @@ free rather than merely error-free.
 | `core/stack.mbt` | typed stack simulation, expression recovery, reordering hazards | done |
 | `core/struct.mbt` | construct-tree walker: blocks/loops/ifs, multi-level escapes, `match` for `br_table` | done |
 | `core/emit.mbt` | MoonBit code generation: names, expression printing, dead-tail pruning | done |
+| `core/verify.mbt` | the call plan: which exports to compare, with which arguments | done |
 | `runtime/` | support library copied into every generated package | done |
 | `cmd/main/` | CLI shell (no logic) | S0, S2 |
 | `corpus/` | fixtures, malformed samples, provenance, regeneration and wabt cross-check | done |
@@ -382,8 +437,8 @@ free rather than merely error-free.
 | S4 | CFG + dominators + natural loops + reducibility |
 | S5 | typed stack simulation, type checking, reordering hazards |
 | S6 | structuring: construct-tree walker, one-shot blocks, multi-level escapes |
-| S7 | MoonBit emitter, first end-to-end decompile ← **you are here** |
-| S8 | differential verification harness |
+| S7 | MoonBit emitter, first end-to-end decompile |
+| S8 | differential verification harness ← **you are here** |
 | S9 | corpus expansion: more real compiler output |
 | S10 | `BOUNDARY.md`: support matrix, 8+ semantic deviations, known gaps |
 | S11 | docs, metrics table, submission material |
@@ -394,7 +449,7 @@ free rather than merely error-free.
 bash script/check.sh
 ```
 
-Runs format check, `moon check` on `wasm-gc`/`js`/`wasm`, 150 unit tests on two targets, CLI smoke
+Runs format check, `moon check` on `wasm-gc`/`js`/`wasm`, 151 unit tests on two targets, CLI smoke
 tests, every corpus fixture through the real binary, the code-layer malformed samples (each must
 report the error code written in its filename — including the one that decodes but does not
 type-check), a cross-backend comparison requiring `info`, `disasm --ops`, `disasm --cfg`,
@@ -405,7 +460,8 @@ hazards on the fixture that isolates them, the structurer on every fixture (no r
 may survive, and the pinned `structured` / `nodes` / `blocks emitted` / `guards` / `max depth` counts
 may not drift), the decoder against wabt, **every fixture decompiled and the generated package
 compiled with `moon check` at zero warnings**, and **the generated packages for `control` and `fib`
-executed against the values the originals produce under Node**.
+executed against the values the originals produce under Node**, and the full differential run
+(**354 calls compared, 354 matched**).
 
 The last two are the ones that matter. A code generator that emits something a compiler rejects is
 obviously broken, but one that emits code that compiles and computes the wrong answer looks exactly

@@ -403,6 +403,44 @@ for pair in control:control_wbtest.mbt fib:fib_wbtest.mbt; do
   fi
 done
 
+step "verify: the generated packages agree with the original modules"
+# The only check here that compares against an implementation that is not this
+# one. `script/verify.sh` asks Node to run the *original* module for every planned
+# call, writes the values into a test file inside the generated package, and runs
+# it; the numbers below are pinned so that a drop in coverage is visible rather
+# than absorbed.
+#
+# Two fixtures are excluded and say so: `imports` and `moonbit_fib` call into a
+# host, and a host is exactly what neither side has. Their generated packages
+# still compile (the step above proves it) and their imports are trapping stubs.
+if bash script/verify.sh > /tmp/moonlift_verify.log 2>&1; then
+  line=$(grep '^calls compared:' /tmp/moonlift_verify.log)
+  compared=$(printf '%s' "$line" | sed -E 's/.*compared: ([0-9]+).*/\1/')
+  matched=$(printf '%s' "$line" | sed -E 's/.*matched: ([0-9]+).*/\1/')
+  skipped=$(printf '%s' "$line" | sed -E 's/.*skipped \(trap\/NaN\): ([0-9]+).*/\1/')
+  failed=$(printf '%s' "$line" | sed -E 's/.*failed: ([0-9]+).*/\1/')
+  if [ "$compared" -eq 354 ] && [ "$matched" -eq 354 ] && [ "$failed" -eq 0 ]; then
+    printf 'ok   354 calls compared against Node, 354 matched, %s skipped\n' "$skipped"
+  else
+    printf 'FAIL verify: %s compared, %s matched, %s failed (expected 354/354/0)\n' \
+      "$compared" "$matched" "$failed"
+    fail=1
+  fi
+  # A skipped call is a call where the original trapped or returned NaN, so it is
+  # not evidence either way. The count is pinned for the same reason as above:
+  # if it jumps, coverage moved even though every assertion still passed.
+  if [ "$skipped" -le 200 ]; then
+    printf 'ok   skipped calls stayed at %s (traps and NaNs in the original)\n' "$skipped"
+  else
+    printf 'FAIL verify: %s calls were skipped, expected at most 200\n' "$skipped"
+    fail=1
+  fi
+else
+  printf 'FAIL verify: the generated packages do not agree with the originals\n'
+  grep -E '^(TOTAL|verify:|.*FAILED)' /tmp/moonlift_verify.log | head -6
+  fail=1
+fi
+
 step "cross-target: same fixture, three backends, identical report"
 for f in corpus/good/fib.wasm corpus/good/globals.wasm corpus/good/moonbit_fib.wasm; do
   a=$(moon run cmd/main --target wasm-gc -- info "$f" 2>/dev/null)
@@ -456,6 +494,28 @@ for f in corpus/good/control.wasm corpus/good/stack.wasm corpus/good/moonbit_fib
     fail=1
   fi
 done
+
+step "cross-target: identical verification plan"
+# The plan decides what gets compared, so it must not depend on the backend that
+# produced it: a different ordering would mean a different set of calls.
+# `moonbit_fib` is deliberately not here: its only export is `_start`, which
+# returns nothing, so its plan is empty and there is nothing to compare.
+for f in corpus/good/arith.wasm corpus/good/control.wasm; do
+  rm -rf /tmp/moonlift_plan_a /tmp/moonlift_plan_b /tmp/moonlift_plan_c
+  moon run cmd/main --target wasm-gc -- verify "$f" -o /tmp/moonlift_plan_a -n 6 >/dev/null 2>&1
+  moon run cmd/main --target js -- verify "$f" -o /tmp/moonlift_plan_b -n 6 >/dev/null 2>&1
+  moon run cmd/main --target wasm -- verify "$f" -o /tmp/moonlift_plan_c -n 6 >/dev/null 2>&1
+  if cmp -s /tmp/moonlift_plan_a/calls.tsv /tmp/moonlift_plan_b/calls.tsv &&
+     cmp -s /tmp/moonlift_plan_a/calls.tsv /tmp/moonlift_plan_c/calls.tsv &&
+     [ -s /tmp/moonlift_plan_a/calls.tsv ]; then
+    printf 'ok   %s plans identically on wasm-gc / js / wasm\n' "$f"
+  else
+    printf 'FAIL %s verification plan differs across backends\n' "$f"
+    diff /tmp/moonlift_plan_a/calls.tsv /tmp/moonlift_plan_b/calls.tsv | head -4
+    fail=1
+  fi
+done
+rm -rf /tmp/moonlift_plan_a /tmp/moonlift_plan_b /tmp/moonlift_plan_c
 
 step "cross-target: identical structured control flow"
 for f in corpus/good/control.wasm corpus/good/stack.wasm corpus/good/moonbit_fib.wasm; do

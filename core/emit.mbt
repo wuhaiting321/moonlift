@@ -1665,6 +1665,25 @@ fn module_text(m : Module, emitted : Array[Int32]) -> String {
       i = i + 1
     }
   }
+  b.write_string(
+    "\n///|\n/// What wasm does at instantiation.\n///\n" +
+    "/// A module's `start` function runs when the module is instantiated, and a\n" +
+    "/// MoonBit package has no instantiation step. A host therefore calls this once,\n" +
+    "/// before any export. Present even when there is nothing to run, so a host\n" +
+    "/// never has to ask whether it should.\n",
+  )
+  b.write_string("pub fn moonlift_init() -> Unit {\n")
+  if m.has_start && m.start_func >= 0 {
+    let callee = if m.start_func < imports {
+      "h\{m.start_func}"
+    } else {
+      func_name(m.start_func)
+    }
+    b.write_string(
+      "  // start section: function \{m.start_func}\n  \{callee}()\n",
+    )
+  }
+  b.write_string("}\n")
   b.to_string()
 }
 
