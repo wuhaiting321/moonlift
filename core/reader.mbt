@@ -14,15 +14,43 @@ pub suberror ReadFail {
 /// this project is expressed as an absolute offset into the input.
 ///
 /// All arithmetic is little-endian, matching the wasm binary format.
+///
+/// `limit` exists so that a section can be handed to a parser as a bounded
+/// *window* over the same buffer (`slice`). The window shares the absolute
+/// offset space of the parent, so a diagnostic inside a section still quotes
+/// the byte position in the file, while a parser physically cannot read past
+/// the section it was given. Both properties are needed: wasm sections are
+/// length-delimited, and a size field that disagrees with its content is one of
+/// the most common forms of corruption.
 pub struct Reader {
   data : Bytes
   /// Offset of the next byte to read. Publicly readable, mutated only by reads.
   mut pos : Int32
+  /// Absolute offset one past the last readable byte of this window.
+  limit : Int32
 }
 
 ///|
 pub fn Reader::new(data : Bytes) -> Reader {
-  { data, pos: 0, }
+  { data, pos: 0, limit: data.length(), }
+}
+
+///|
+/// Carve a bounded window of `len` bytes off the front of this reader.
+///
+/// The current reader advances past those bytes, the returned window cannot
+/// read beyond them. Offsets stay absolute.
+pub fn Reader::slice(self : Reader, len : Int32) -> Reader raise ReadFail {
+  if len < 0 || self.pos + len > self.limit {
+    fail_at(
+      self.pos,
+      E001Truncated,
+      "unexpected end of input slicing \{len} bytes (only \{self.remaining()} left)",
+    )
+  }
+  let w = { data: self.data, pos: self.pos, limit: self.pos + len, }
+  self.pos = self.pos + len
+  w
 }
 
 ///|
@@ -38,17 +66,17 @@ pub fn Reader::position(self : Reader) -> Int32 {
 
 ///|
 pub fn Reader::length(self : Reader) -> Int32 {
-  self.data.length()
+  self.limit
 }
 
 ///|
 pub fn Reader::remaining(self : Reader) -> Int32 {
-  self.data.length() - self.pos
+  self.limit - self.pos
 }
 
 ///|
 pub fn Reader::at_end(self : Reader) -> Bool {
-  self.pos >= self.data.length()
+  self.pos >= self.limit
 }
 
 ///|
@@ -72,7 +100,7 @@ fn[T] fail_at(
 ///|
 /// One unsigned byte.
 pub fn Reader::u8(self : Reader) -> Byte raise ReadFail {
-  if self.pos >= self.data.length() {
+  if self.pos >= self.limit {
     fail_at(self.pos, E001Truncated, "unexpected end of input reading 1 byte")
   }
   let b = self.data[self.pos]
@@ -84,7 +112,7 @@ pub fn Reader::u8(self : Reader) -> Byte raise ReadFail {
 /// Look at the next byte without consuming it. Returns `None` at end of input,
 /// which is how section loops terminate.
 pub fn Reader::peek_u8(self : Reader) -> Byte? {
-  if self.pos >= self.data.length() {
+  if self.pos >= self.limit {
     None
   } else {
     Some(self.data[self.pos])
@@ -95,7 +123,7 @@ pub fn Reader::peek_u8(self : Reader) -> Byte? {
 /// Drop `n` bytes. Fails rather than silently clamping: a truncated section is
 /// a malformed module, not something to paper over.
 pub fn Reader::skip(self : Reader, n : Int32) -> Unit raise ReadFail {
-  if n < 0 || self.pos + n > self.data.length() {
+  if n < 0 || self.pos + n > self.limit {
     fail_at(
       self.pos,
       E001Truncated,
@@ -109,7 +137,7 @@ pub fn Reader::skip(self : Reader, n : Int32) -> Unit raise ReadFail {
 /// Copy `n` bytes out. A copy, not a view: the returned bytes outlive the read
 /// position and are stored in the IR.
 pub fn Reader::bytes(self : Reader, n : Int32) -> Bytes raise ReadFail {
-  if n < 0 || self.pos + n > self.data.length() {
+  if n < 0 || self.pos + n > self.limit {
     fail_at(
       self.pos,
       E001Truncated,

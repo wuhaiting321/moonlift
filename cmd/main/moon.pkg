@@ -1,6 +1,7 @@
 import {
   "moonlift/moonlift/core",
   "moonbitlang/core/env",
+  "moonbitlang/x/fs",
 }
 
 pkgtype(kind: "executable")

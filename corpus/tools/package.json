@@ -1,0 +1,11 @@
+{
+  "name": "moonlift-corpus-tools",
+  "private": true,
+  "description": "Regenerates the wasm fixtures. Not needed to build or test moonlift: the binaries are committed.",
+  "scripts": {
+    "build": "node build.js"
+  },
+  "dependencies": {
+    "wabt": "^1.0.36"
+  }
+}

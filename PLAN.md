@@ -20,11 +20,13 @@
 | `Float` / `Double` | `Float` = f32（有 `::sqrt`、`::reinterpret_as_int`）；`Double` = f64（有 ceil/floor/round/trunc） | `f32.*`→`Float`，`f64.*`→`Double` |
 | `Bytes` / `Array[Byte]` | 都可变长、可索引 | 线性内存用 `Array[Byte]` |
 | 可用数学库 | `@math` 有 sin/cos/tan/exp/ln/pow/log10/log2/cbrt/hypot/atan2（f64 与 f32 双版本） | 浮点算子可一一映射 |
-| **`--target wasm`（MVP 后端）** | **可用**：`moon build --target wasm` → 20 KB MVP wasm（纯 i32/i64/f32/f64 + block/loop/if，**无 GC 类型**），node + WASI 实跑 `fib(20)=6765` | **语料主源就地解决**：拿真实编译器产物当输入，比手写夹具可信 |
+| **`--target wasm`（MVP 后端）** | **可用**：`moon build --target wasm` → 20 KB wasm，node + WASI 实跑 `fib(20)=6765` | 可当「真实编译器产物」语料，但**不等于 MVP 子集**，见下一行 |
+| **MoonBit wasm 产物的真实特征**（S2 实测，推翻前一版判断） | 含 **`datacount` 段**、**多返回值签名**（2 个）、**`v128` 局部变量**（1 个函数，memcpy 助手）、`memory.fill` 等 bulk/SIMD 指令 | ① 段顺序不是 id 序：`datacount` 在 `element` 与 `code` 之间 → 用 rank 比较 ② `v128`/多值由 `info` 解析并计数、由代码生成逐个函数拒绝 ③ 解码器必须先「宽解析」再「窄生成」 |
 | native 后端 | 不可用：无 MSVC；`--target llvm` 需 nightly（缺 `prelude.mi`） | 验证矩阵改为 **wasm / wasm-gc / js 三端实跑**；native 降级为「环境依赖」，不阻塞验收 |
 | Node | v22.22.2 | 差分测试的**参考实现**（`WebAssembly.instantiate`）+ 三端运行载体（含 `node:wasi`） |
 | wabt（npm 纯 JS 版） | **可用**：`npm i wabt` → wat↔wasm 双向；41 字节 `add` 模块汇编并执行通过 | ① 手写 `.wat` 夹具可汇编 ② **解码器可与 wabt `wasm2wat` 逐指令对拍** |
 | 文件读取 | `moonbitlang/x@0.5.6` 的 `fs` 包在 wasm-gc / js / wasm 三端实测可读文件（`read_file_to_bytes` 三端均返回 508 字节） | CLI 有真实 IO；首次构建需联网拉包，index 本地已到 0.5.6（0.5.8 需 `moon update`，当前会超时） |
+| 三端 `argv` 布局 | **不一致**：wasm-gc / wasm 是 `[program, cmd, ...]`，js 是 `[node, main.js, cmd, ...]` | CLI 不硬编码「丢掉 N 个」，改为定位第一个已知子命令；由三端输出比对脚本发现 |
 | clang / emcc / rustc | 缺失（**已不构成阻塞**） | 无需 C 工具链：语料 = MoonBit 自身 MVP 产物 + 手写 wat + 可选公开 prebuilt wasm |
 
 官方验收 6 条（原文）：MoonBit 为主 / 仓库公开 / 能够运行 / 工作有效 / 开源合规 / AI 可解释。
@@ -214,7 +216,7 @@ pub(open) trait Host {
 |---|---|---|---|
 | **S0** | 立项脚手架 | `moon.mod`/`moon.pkg`/LICENSE/NOTICE/README 骨架/git init | `moon check` 通过；首个 commit |
 | **S1** | 位读取层 | `core`：LEB128(u32/u64/s32/s64)、f32/f64 位读取、边界检查、`Diag` 错误类型 | 单测覆盖非法 LEB128、截断、超长；错误带偏移 |
-| **S2** | 模块模型 + 段解码 | `model`+`decode`：12 个段 → IR；`moonlift info` 上线 | 语料 100% 解析成功；非法输入 100% 报 `E0xx` |
+| **S2** | 模块模型 + 段解码 | `core/section.mbt`+`report.mbt`：12 个段 → IR；`moonlift info` 上线 | **已完成**：8 个语料全解析（含 20KB MoonBit 产物），11 个坏样本全部报 `E0xx/E1xx` + 字节偏移，三端输出逐字节一致 |
 | **S3** | 指令解码 | 172 条 MVP 指令 + 立即数；`.wat` 风格反汇编输出（自检用） | 反汇编结果与手写期望逐行一致（快照测试） |
 | **S4** | CFG + 可归约判定 | 基本块划分、支配关系、循环识别、可归约性判定 | 对 10 个夹具输出正确块图（快照） |
 | **S5** | 类型化栈模拟 | 块内表达式重建（L1）+ 失败降级（L2）判定 | 每个算子有单测；混合用例正确 |

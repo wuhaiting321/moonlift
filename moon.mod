@@ -13,6 +13,10 @@ repository = ""
 
 license = "Apache-2.0"
 
+import {
+  "moonbitlang/x@0.5.6",
+}
+
 keywords = [
   "wasm",
   "webassembly",

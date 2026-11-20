@@ -7,9 +7,11 @@ MoonBit package that `moon build` accepts and that behaves like the original mod
 `wasm`, `wasm-gc` and `js`. Correctness is not asserted — it is measured: every decompiled module
 is differentially tested against a reference engine (Node's `WebAssembly`) on random inputs.
 
-> **Status: S1 (byte layer).** The error taxonomy, the LEB128/fixed-width reader and a strict UTF-8
-> validator are implemented and covered by 23 white-box tests. Section decoding starts at S2.
-> Nothing in this repository claims to decompile anything yet — see [Roadmap](#roadmap) and
+> **Status: S2 (container layer).** The byte reader, the LEB128/fixed-width layer, the UTF-8
+> validator and the full section decoder are implemented: 58 white-box tests, 8 fixtures decoded,
+> 11 malformed fixtures rejected with a stable error code and a byte offset. `moonlift info` works
+> on real compiler output, including MoonBit's own 20 KB wasm binary.
+> `decompile` and `verify` are not implemented yet — see [Roadmap](#roadmap) and
 > [BOUNDARY.md](BOUNDARY.md).
 
 ---
@@ -41,22 +43,53 @@ moon run cmd/main --target wasm-gc -- decompile path/to/module.wasm -o out/
 moon run cmd/main --target wasm-gc -- verify path/to/module.wasm -n 200
 ```
 
-Exit codes: `0` success · `2` usage error · `3` input rejected (`E0xx`/`E1xx`) · `1` internal error.
-MoonBit has no portable `exit()`, so the code is echoed as `moonlift: exit N`; scripts grep for it.
+`info` on a real compiler artifact:
+
+```
+$ moon run cmd/main --target wasm-gc -- info corpus/good/moonbit_fib.wasm
+file      corpus/good/moonbit_fib.wasm (20312 bytes)
+format    WebAssembly binary, version 1 (MVP subset)
+
+sections  13
+    id  name          offset      size
+     1  type               8        89
+     2  import            99        35
+     ...
+    12  datacount        292         1
+    10  code             295      7657
+    11  data            7955       745
+     0  custom          8703     11535
+
+types     14
+imports   1 (all func; other import kinds are rejected)
+functions 79 defined, 1 imported
+...
+functions
+     #  name                        signature                         locals   bytes
+     1  tlsf/searchBlock            (i32, i32) -> i32                      1     168
+     ...
+
+notes
+  - 2 signature(s) return more than one value (multi-value proposal); code generation must fall back to a boxed stack for those functions
+  - 1 function(s) declare v128 locals (typical of compiler memcpy helpers); code generation refuses them individually
+```
+
+Exit codes: `0` success · `2` usage error · `3` input rejected (`E0xx`/`E1xx`) · `4` input
+unreadable. MoonBit has no portable `exit()`, so the code is echoed as `moonlift: exit N`; scripts
+grep for it.
 
 ## Repository layout
 
 | Path | Role | Stage |
 |---|---|---|
-| `core/` | byte reader, LEB128, UTF-8, diagnostics, error taxonomy | done |
-| `model/` | module IR + the 172 MVP instructions | S2–S3 |
-| `decode/` | section and instruction decoding | S2–S3 |
+| `core/` | byte reader, LEB128, UTF-8, diagnostics, section decoder, module IR, report | done |
+| `model/` | instruction IR (172 MVP opcodes) | S3 |
+| `decode/` | instruction decoding | S3 |
 | `analyze/` | CFG, dominators, reducibility, typed stack simulation | S4–S5 |
 | `reloop/` | structuring of irreducible control flow | S6 |
 | `emit/` | MoonBit code generation + prelude | S7 |
-| `fixture/` | programmatic `.wasm` builders used by tests | S9 |
-| `cmd/main/` | CLI shell (no logic) | S0 |
-| `corpus/` | test modules with recorded provenance and SHA-256 | S9 |
+| `cmd/main/` | CLI shell (no logic) | S0, S2 |
+| `corpus/` | fixtures + provenance + regeneration tooling | S2 |
 | `script/` | one-command check / demo scripts | S0 |
 
 ## Roadmap
@@ -64,24 +97,29 @@ MoonBit has no portable `exit()`, so the code is echoed as `moonlift: exit N`; s
 | Stage | Deliverable |
 |---|---|
 | S0 | scaffold, diagnostics, CLI skeleton, CI script |
-| S1 | byte reader + LEB128 with offset-anchored errors ← **you are here** |
-| S2 | section decoding, `moonlift info` |
+| S1 | byte reader + LEB128 with offset-anchored errors |
+| S2 | section decoding, `moonlift info` ← **you are here** |
 | S3 | 172 MVP instructions, `.wat`-style dump for self-check |
 | S4 | CFG + reducibility analysis |
 | S5 | typed stack simulation (expression recovery + fallback) |
 | S6 | Relooper for irreducible flow |
 | S7 | MoonBit emitter, first end-to-end decompile |
 | S8 | differential verification harness |
-| S9 | corpus: MoonBit MVP outputs + hand-written `.wat` + optional public artifacts |
+| S9 | corpus expansion: more real compiler output |
 | S10 | `BOUNDARY.md`: support matrix, 8+ semantic deviations, known gaps |
 | S11 | docs, metrics table, submission material |
 
-## Verify the scaffold
+## Verify
 
 ```bash
-bash script/check.sh          # moon check + moon test + CLI smoke on 3 targets
+bash script/check.sh
 ```
+
+Runs format check, `moon check` on `wasm-gc`/`js`/`wasm`, 58 unit tests on two targets, CLI smoke
+tests, every corpus fixture through the real binary, and a cross-backend comparison that requires
+`info` output to be byte-identical on all three targets.
 
 ## License
 
-Apache-2.0. Third-party attribution: see [NOTICE](NOTICE).
+Apache-2.0. Third-party attribution and corpus provenance: see [NOTICE](NOTICE) and
+[corpus/PROVENANCE.md](corpus/PROVENANCE.md).

@@ -2,7 +2,7 @@
 
 This file is normative. If the code and this document disagree, that is a bug in one of them.
 
-Version: 0.1.0 (stage S1). Sections marked *(S10)* are filled in as the corresponding stage lands;
+Version: 0.1.0 (stage S2). Sections marked *(S10)* are filled in as the corresponding stage lands;
 what is written below is already true of the shipped code.
 
 ---
@@ -12,21 +12,30 @@ what is written below is already true of the shipped code.
 | Aspect | Accepted | Rejected | Code |
 |---|---|---|---|
 | Container | `\0asm` + version `1` | other magic / version | `E002`, `E003` |
-| Sections | type(1), import(2), function(3), table(4), memory(5), global(6), export(7), start(8), element(9), code(10), data(11), datacount(12), custom(0, `name` only) | unknown section id | `E005` |
-| Value types | `i32` `i64` `f32` `f64` | `v128`, `funcref`/`externref` outside tables | `E007` |
-| Instructions | the 172 MVP opcodes + sign-extension (`0xFC 0x00–0x07`, switchable) | `0xFB`, `0xFD`, `0xFE`, exception opcodes, tail calls | `E006`, `E101`–`E105` |
-| Memories | exactly one, 32-bit | `memory64`, multi-memory | `E106` |
-| Imports | function imports only, surfaced as a `Host` trait whose default method traps | memory/table/global imports | `E107` |
+| Sections | type(1), import(2), function(3), table(4), memory(5), global(6), export(7), start(8), element(9), code(10), data(11), datacount(12), custom(0) | unknown section id | `E005` |
+| Section order | the spec order, including `datacount` between `element` and `code` | duplicated or out-of-order section | `E005` |
+| Value types | `i32` `i64` `f32` `f64`, plus `v128` **recognised but never generated** | `funcref` / `externref` outside a table | `E101` |
+| Function signatures | any arity, zero or more results | — (multi-value is parsed and flagged; codegen refuses those functions individually) | — |
+| Instructions | the 172 MVP opcodes (S3) | `0xFB`, `0xFC`, `0xFD`, `0xFE`, exception opcodes, tail calls | `E006`, `E101`–`E105`, `E109` |
+| Memories | exactly one, 32-bit | `memory64`, multi-memory, shared memory | `E106`, `E103` |
+| Tables | any number, `funcref` only | `externref` tables | `E101` |
+| Imports | function imports only (S3 onward, surfaced as a `Host` trait whose default method traps) | memory/table/global imports | `E107` |
+| Data / element segments | active, table/memory 0, i32 constant offset | passive segments, element expressions | `E109` |
 | Control flow | reducible CFGs (covers what C/Rust compilers emit) | irreducible CFGs | `E108` |
 
-**Status.** The container row and the LEB128/length discipline it depends on are implemented
-(S1 = reader + UTF-8 + diagnostics). Everything below "value types" is still a contract for
-S3–S7, not a description of current capability.
+**Status.** Everything down to "data / element segments" is implemented and tested (S2 = byte layer
++ section decoder + `info`). Instruction decoding, control-flow structuring and code generation are
+contracts for S3–S7.
+
+**The parse/generate split is deliberate.** `info` parses more than `decompile` will generate:
+`v128` types, multi-value signatures, huge local counts and (later) unimplemented opcodes are all
+*reported* by `info` and *refused per function* by the code generator. Refusing at the container
+layer would hide which function is the problem; refusing silently would be worse.
 
 ## 2. Error codes
 
 Frozen. Never renumbered; new codes are appended. `core/all_codes()` is the single source of truth
-and a test asserts that the tags stay unique.
+and a test asserts that the tags stay unique and that the count matches.
 
 | Tag | Class | Meaning | Remedy |
 |---|---|---|---|
@@ -34,34 +43,38 @@ and a test asserts that the tags stay unique.
 | E002 | malformed | missing `\0asm` | not a wasm file |
 | E003 | malformed | version != 1 | only binary format 1 |
 | E004 | malformed | bad LEB128 | corrupt length/index |
-| E005 | malformed | bad section | size or order inconsistent |
-| E006 | malformed | bad opcode | outside the MVP set |
-| E007 | malformed | bad value type | outside i32/i64/f32/f64 |
+| E005 | malformed | bad section | size, order, count or flag inconsistent |
+| E006 | malformed | bad opcode | outside the MVP set, or illegal in this position |
+| E007 | malformed | bad value type | outside i32/i64/f32/f64/v128 |
 | E008 | malformed | index out of range | func/local/global/type/label |
 | E009 | malformed | bad UTF-8 | name or import string |
 | E010 | malformed | segment out of bounds | data/element range |
-| E101 | unsupported | GC proposal | rebuild without reference types |
+| E101 | unsupported | GC / reference types | rebuild without reference types |
 | E102 | unsupported | SIMD | disable auto-vectorisation |
 | E103 | unsupported | threads/atomics | rebuild single-threaded |
 | E104 | unsupported | exceptions | rebuild without EH |
 | E105 | unsupported | tail calls | rebuild without sibling-call optimisation |
 | E106 | unsupported | multi-memory / memory64 | single 32-bit memory |
 | E107 | unsupported | non-function import | link memory/table/global statically |
-| E108 | unsupported | irreducible CFG | see §4 |
+| E108 | unsupported | irreducible CFG | see §3 |
+| E109 | unsupported | bulk memory | no passive segments, no `memory.copy`/`fill` |
 
 Rule: **reject, never silently degrade.** Emitting code that compiles but computes the wrong value is
 the one failure mode this project refuses to have.
 
-## 3. Semantic deviations *(S10)*
+Every diagnostic carries the absolute byte offset of the field that failed, not of the section it is
+in. `E004` on a section size points at the LEB128 byte, not at the section id.
 
-Populated during S7. Each entry will state: deviation, reason, observable impact, and whether it is
-acceptable for the declared subset. Expected first entries include `f32.nearest` rounding at exact
-halves, `memory.grow` failure versus host limit, `select` on reference types, NaN payload
-propagation, and the order of traps versus side effects.
+## 3. Control-flow deviations *(S10)*
+
+Populated during S6/S7. Each entry will state: deviation, reason, observable impact, and whether it
+is acceptable for the declared subset. `E108` is reserved for the one case that is *not* acceptable
+and is refused rather than approximated.
 
 ## 4. Known limitations at 0.1.0
 
-1. **No decompilation yet.** `info`, `decompile` and `verify` print "not implemented" and exit 2.
+1. **No decompilation yet.** `decompile` and `verify` print "not implemented" and exit 2. `info` is
+   fully implemented.
 2. **native backend unverified.** This machine has no MSVC and `--target llvm` requires a nightly
    toolchain (`missing prelude.mi`). Verification therefore runs on `wasm`, `wasm-gc` and `js`.
    Installing VS Build Tools makes native available; it does not change any correctness criterion,
@@ -71,8 +84,19 @@ propagation, and the order of traps versus side effects.
 4. **First build needs the network** to fetch `moonbitlang/x@0.5.6` (file IO). The local registry
    index currently caps at 0.5.6; `moon update` times out on this network, so the pin is deliberate.
 5. **Nullary enum variants cannot be constructed across packages** in toolchain 0.1.20261020
-   (`error 4036: cannot create values of the read-only type`). Tests for the taxonomy therefore live
-   in `core/*_wbtest.mbt`. If the limitation is lifted, they can move to black-box tests.
+   (`error 4036: cannot create values of the read-only type`). Matching them works, constructing
+   them does not. Consequences: (a) taxonomy tests live in `core/*_wbtest.mbt`; (b) all formatting
+   that needs to *build* an enum value lives in `core/` (`report.mbt`), not in the CLI.
+6. **`argv` layout differs per backend**, measured not assumed: `wasm-gc` and `wasm` pass
+   `[program, subcommand, ...]`, `js` passes `[node, main.js, subcommand, ...]`. The CLI therefore
+   locates the first known subcommand instead of dropping a fixed number of tokens. Found by the
+   cross-backend check in `script/check.sh`, which now compares full output, not just exit status.
+7. **`Bytes::to_unchecked_string` is not a UTF-8 decoder.** It reinterprets bytes as UTF-16LE, so
+   `b"\x03abc"` decodes to `"扡"`. `core/utf8.mbt` contains a real decoder; do not "simplify" it away.
+8. **MoonBit's own wasm output is not in the MVP subset.** It emits a `datacount` section,
+   multi-value signatures, `v128` locals in its memcpy helper, and bulk-memory/SIMD instructions.
+   `info` parses the first three (they are structural); instruction-level refusal happens in S3.
+   `moonbit_fib.wasm` in `corpus/good/` is the evidence, and `moonlift info` prints the counts.
 
 ## 5. Reproduce every claim
 
@@ -81,4 +105,7 @@ bash script/check.sh
 ```
 
 Every number quoted in the README or in the submission form must be reproducible by a command in
-`script/`; otherwise it does not belong in the document.
+`script/`; otherwise it does not belong in the document. The script currently verifies: formatting,
+three-target `moon check`, 58 unit tests on two targets, CLI usage paths, 8 fixtures decoded,
+11 malformed fixtures rejected with code + offset, and byte-identical `info` output across
+`wasm-gc`, `js` and `wasm`.

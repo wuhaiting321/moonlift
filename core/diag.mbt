@@ -24,6 +24,7 @@ pub enum ErrorCode {
   E106MultiMemory // more than one memory, or memory64 flag
   E107NonFuncImport // memory / table / global import
   E108Irreducible // CFG cannot be structured
+  E109BulkMemory // bulk-memory / passive segment constructs
 }
 
 ///|
@@ -52,6 +53,7 @@ pub fn all_codes() -> Array[ErrorCode] {
     E106MultiMemory,
     E107NonFuncImport,
     E108Irreducible,
+    E109BulkMemory,
   ]
 }
 
@@ -77,6 +79,7 @@ pub fn ErrorCode::tag(self : ErrorCode) -> String {
     E106MultiMemory => "E106"
     E107NonFuncImport => "E107"
     E108Irreducible => "E108"
+    E109BulkMemory => "E109"
   }
 }
 
@@ -124,6 +127,8 @@ pub fn ErrorCode::hint(self : ErrorCode) -> String {
     E107NonFuncImport =>
       "only function imports are supported; link memory/table/global statically"
     E108Irreducible => "structural jump into a loop body; see BOUNDARY.md"
+    E109BulkMemory =>
+      "rebuild without bulk-memory (passive segments, memory.copy/fill)"
   }
 }
 
