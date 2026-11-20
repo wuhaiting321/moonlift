@@ -104,11 +104,14 @@ printf 'ok   %d malformed fixtures rejected\n' "$bad"
 
 step "corpus: code-layer corruption is caught with the code in the filename"
 # Two claims per file, and both matter: `info` must still accept the container
-# (the layers are independent), and `disasm` must reject the body with exactly
-# the expected code.
+# (the layers are independent), and the body must be rejected with exactly the
+# expected code. `--stack` is the analyser used here because it is the strongest
+# of the three: it runs the decoder *and* the type checker, so a sample that only
+# fails type checking is still caught. The one such sample is checked separately
+# below, where plain `disasm` must still list it.
 for f in corpus/badcode/*.wasm; do
   want=$(basename "$f" | sed -E 's/.*_([eE][0-9]{3})\.wasm/\1/' | tr 'a-z' 'A-Z')
-  got=$(cli disasm "$f" | grep -oE 'E[0-9]{3} at byte [0-9]+' | head -1)
+  got=$(cli disasm "$f" --stack | grep -oE 'E[0-9]{3} at byte [0-9]+' | head -1)
   case "$got" in
     "$want at byte "*) printf 'ok   %s -> %s\n' "$(basename "$f")" "$got" ;;
     *) printf 'FAIL %s expected %s, got %s\n' "$(basename "$f")" "$want" "${got:-nothing}"; fail=1 ;;
@@ -117,6 +120,15 @@ for f in corpus/badcode/*.wasm; do
     printf 'FAIL %s: info should still describe the container\n' "$(basename "$f")"; fail=1
   fi
 done
+
+# The layers are independent in one direction only: a body that decodes but does
+# not type-check is still *listed*. If `disasm` started type checking, this would
+# fail — and the listing is what makes a type error debuggable in the first place.
+if cli disasm corpus/badcode/type_mismatch_e011.wasm | grep -q 'f32.const'; then
+  printf 'ok   a type error still lists (decode and type check are separate layers)\n'
+else
+  printf 'FAIL the type-mismatch sample no longer lists\n'; fail=1
+fi
 
 step "corpus: every body decodes, and only SIMD stops early"
 # Expected partial bodies: exactly one, in the real compiler artifact, at a
@@ -185,6 +197,67 @@ else
   fail=1
 fi
 
+step "stack: every fixture type-checks, and every block recovers"
+for f in corpus/good/*.wasm; do
+  if cli disasm "$f" --stack >/dev/null; then :; else
+    printf 'FAIL %s --stack\n' "$f"; fail=1
+  fi
+done
+printf 'ok   all good fixtures type-check\n'
+
+# The real artifact is the only input large enough to exercise the recovery on
+# code nobody wrote for it. The counts are pinned because every one of them is a
+# claim in the README: 72 of 79 bodies analysed, 6 refused by name (bulk memory,
+# two call_indirect, two multi-value), 1 skipped (SIMD).
+stats=$(cli disasm corpus/good/moonbit_fib.wasm --stats)
+if printf '%s' "$stats" | grep -q '^analysed        72 of 79 bodies$'; then
+  printf 'ok   moonbit_fib: 72 of 79 bodies analysed\n'
+else
+  printf 'FAIL moonbit_fib: expected 72 analysed bodies\n'
+  printf '%s\n' "$stats" | grep -E '^(analysed|skipped|refused)' | head -4
+  fail=1
+fi
+if printf '%s' "$stats" | grep -q '^refused         6$'; then
+  printf 'ok   moonbit_fib: 6 refusals, each named\n'
+else
+  printf 'FAIL moonbit_fib: expected 6 refusals\n'; fail=1
+fi
+if printf '%s' "$stats" | grep -q 'rejected'; then
+  printf 'FAIL moonbit_fib: a valid module was rejected as malformed\n'; fail=1
+else
+  printf 'ok   moonbit_fib: nothing rejected as malformed\n'
+fi
+# 110 forced spills against 1 hazard spill is the shape the design predicts:
+# almost every temporary is a call result (an ordering requirement of the source),
+# and the reordering hazards are rare — but they are the ones that matter.
+if printf '%s' "$stats" | grep -q '^spills          111 (110 forced, 1 hazard)$'; then
+  printf 'ok   moonbit_fib: 111 spills, 1 of them a reordering hazard\n'
+else
+  printf 'FAIL moonbit_fib: spill counts changed\n'
+  printf '%s\n' "$stats" | grep '^spills' ; fail=1
+fi
+
+# The two hazards, pinned to the line that would be wrong without the spill. A
+# decompiler that evaluates the trees at the point of use prints `local 0 = local
+# 0` order swapped, or nothing at all between the load and the store.
+out=$(cli disasm corpus/good/stack.wasm --stack)
+if printf '%s' "$out" | grep -q 't0 = local 0' &&
+   printf '%s' "$out" | grep -q 'out \[i32\] = (i32.add(t0, local 0))'; then
+  printf 'ok   a read live across an overwrite is sunk first\n'
+else
+  printf 'FAIL local-overwrite hazard\n'; fail=1
+fi
+if printf '%s' "$out" | grep -q 't0 = i32.load\[offset=0 align=4\](local 0)'; then
+  printf 'ok   a load live across a store is sunk first\n'
+else
+  printf 'FAIL load/store hazard\n'; fail=1
+fi
+if printf '%s' "$out" | grep -q 'out \[i32\] = (i32.mul(local 0, local 0))'; then
+  printf 'ok   local.tee followed by a read does not spill\n'
+else
+  printf 'FAIL tee must not spill\n'; fail=1
+fi
+
 step "cross-target: same fixture, three backends, identical report"
 for f in corpus/good/fib.wasm corpus/good/globals.wasm corpus/good/moonbit_fib.wasm; do
   a=$(moon run cmd/main --target wasm-gc -- info "$f" 2>/dev/null)
@@ -222,6 +295,19 @@ for f in corpus/good/control.wasm corpus/good/moonbit_fib.wasm; do
     printf 'ok   %s graphs identically on wasm-gc / js / wasm\n' "$f"
   else
     printf 'FAIL %s control-flow graph differs across backends\n' "$f"
+    fail=1
+  fi
+done
+
+step "cross-target: identical recovered expressions"
+for f in corpus/good/control.wasm corpus/good/stack.wasm corpus/good/moonbit_fib.wasm; do
+  a=$(moon run cmd/main --target wasm-gc -- disasm "$f" --stack 2>/dev/null)
+  b=$(moon run cmd/main --target js -- disasm "$f" --stack 2>/dev/null)
+  c=$(moon run cmd/main --target wasm -- disasm "$f" --stack 2>/dev/null)
+  if [ "$a" = "$b" ] && [ "$a" = "$c" ] && [ -n "$a" ]; then
+    printf 'ok   %s recovers identically on wasm-gc / js / wasm\n' "$f"
+  else
+    printf 'FAIL %s expressions differ across backends\n' "$f"
     fail=1
   fi
 done

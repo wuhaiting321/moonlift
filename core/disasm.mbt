@@ -191,6 +191,8 @@ pub fn disassemble_stats(m : Module) -> String raise ReadFail {
   // graphs themselves, and duplicating them here would make `--stats` unreadable
   // on the real 20 KB artifact.
   b.write_string(cfg_summary_text(m))
+  // And the typed-stack block, for the same reason.
+  b.write_string(stack_summary_text(m))
   b.to_string()
 }
 

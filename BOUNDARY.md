@@ -2,7 +2,7 @@
 
 This file is normative. If the code and this document disagree, that is a bug in one of them.
 
-Version: 0.1.0 (stage S4). Sections marked *(S10)* are filled in as the corresponding stage lands;
+Version: 0.1.0 (stage S5). Sections marked *(S10)* are filled in as the corresponding stage lands;
 what is written below is already true of the shipped code.
 
 ---
@@ -23,10 +23,13 @@ what is written below is already true of the shipped code.
 | Imports | function imports only (S3 onward, surfaced as a `Host` trait whose default method traps) | memory/table/global imports | `E107` |
 | Data / element segments | active, table/memory 0, i32 constant offset | passive segments, element expressions | `E109` |
 | Control flow | reducible CFGs — and every CFG structured wasm can express is reducible; measured 0 irreducible in 78 bodies | irreducible CFGs (reachable only through a hand-built graph, not through wasm) | `E108` |
+| Typing | every body the spec validates: operand types, block results, branch payloads, function result | a body that does not type-check (only reachable from a hand-patched or non-conforming producer) | `E011` |
+| Multi-value | recognised (type-index block types, signatures with several results) and reported by `info` | *generated*: a block typed by index, or a call returning several values | `E112` |
 
 **Status.** Everything down to "instructions with an unknown operand length" is implemented and
-tested (S2 = container, S3 = instruction decoder + `disasm`, S4 = control-flow graph). Control-flow
-*structuring* and code generation are contracts for S6–S7.
+tested (S2 = container, S3 = instruction decoder + `disasm`, S4 = control-flow graph, S5 = typed
+stack simulation and type checking). Control-flow *structuring* and code generation are contracts
+for S6–S7.
 
 **Instruction-level rule: a wrong *length* stops, a wrong *value* is reported.** An opcode whose
 operand size we do not know (`0xFD` SIMD, `0xFE` atomics) cannot be skipped, because guessing would
@@ -61,6 +64,33 @@ and for every fixture. The analysis exists because the Relooper needs to *know* 
 false positive would be a structuring bug that no test would otherwise catch. It is tested on
 hand-written successor matrices, since a wasm fixture cannot produce the input.
 
+**Typed stack contract.** Each block is simulated once, in block-index order, which is a topological
+order of the forward edges (a loop's back edge points at a lower index). A block's entry is the exit
+shape of its first resolved predecessor; every other predecessor must agree *exactly*, and a
+disagreement is a validation error rather than a merge. The stack shapes at a block's edges are
+therefore a property of the input, not a choice made here — which is what lets S7 assign them to
+variables without consulting anything else.
+
+Three reorderings are forbidden, and each is enforced by materialising the pending value into a
+temporary *before* the instruction that would invalidate it:
+
+| Hazard | Why it is wrong | Cost |
+|---|---|---|
+| a pending `local.get i` across `local.set i` | the read would observe the new value | one temp per occurrence |
+| a pending `i32.load` across a store, a call, or `memory.grow` | the read would observe the new memory (or trap differently) | one temp per occurrence |
+| a pending `global.get i` across `global.set i` or any call | a call may write any global | one temp per occurrence |
+
+A fourth is not a hazard but a requirement: a **call** must execute where it appears, so its result
+is always materialised immediately. Those temporaries are counted separately (`forced`) from the
+hazard ones, because only the latter are decompiler mistakes waiting to happen. Measured on the real
+artifact: 110 forced, 1 hazard across 72 analysed bodies — which is the shape the design predicts,
+and the reason the distinction is worth keeping.
+
+**What is *not* deferred at all.** A block's exit expressions are evaluated after its last statement,
+so anything that could change between the push and the end of the block is sunk. Nothing else is
+carried across a block: a value arriving from a predecessor is named `in0`, `in1`, i.e. it is treated
+as the block parameter it becomes in the generated code.
+
 ## 2. Error codes
 
 Frozen. Never renumbered; new codes are appended. `core/all_codes()` is the single source of truth
@@ -78,6 +108,7 @@ and a test asserts that the tags stay unique and that the count matches.
 | E008 | malformed | index out of range | func/local/global/type/label |
 | E009 | malformed | bad UTF-8 | name or import string |
 | E010 | malformed | segment out of bounds | data/element range |
+| E011 | malformed | operand stack does not type-check | see §5; `disasm --stack` names the byte |
 | E101 | unsupported | GC / reference types | rebuild without reference types |
 | E102 | unsupported | SIMD | disable auto-vectorisation |
 | E103 | unsupported | threads/atomics | rebuild single-threaded |
@@ -89,6 +120,7 @@ and a test asserts that the tags stay unique and that the count matches.
 | E109 | unsupported | bulk memory | no passive segments, no `memory.copy`/`fill` |
 | E110 | unsupported | second table/memory named | one table, one memory |
 | E111 | unsupported | indirect call through a table | inline the call |
+| E112 | unsupported | multi-value block type or multi-result call | rebuild without multi-value |
 
 Rule: **reject, never silently degrade.** Emitting code that compiles but computes the wrong value is
 the one failure mode this project refuses to have.
@@ -132,10 +164,14 @@ and is refused rather than approximated.
 9. **Alignment hints are validated, not ignored.** An `align=` exponent larger than the natural
    alignment of the access is a spec violation; it is rejected with `E007` rather than carried into
    generated code, where it would produce a misaligned read.
-10. **No type checking yet.** The decoder validates *structure* (label depth, `else` placement,
-    function-final `end`, index bounds, memarg alignment) but not *types*: `i32.add` on two `f32`
-    operands decodes without complaint. The typed stack simulation of S5 is what makes that an
-    error, and until it lands this is a real gap, stated here rather than implied.
+10. **Type checking is block-local, not global.** The stack simulation validates every block and
+    every edge, which catches everything a whole-module validator would catch *except* one class:
+    unreachable code is not type-checked at all. After `unreachable`, `br`, `br_table` or `return`,
+    the spec gives the stack a polymorphic type, and the blocks that follow have no reachable
+    predecessor; they are marked dead and skipped (see §4.12). This is a deliberate trade: dead code
+    cannot affect the generated program, and simulating it would require inventing a stack shape for
+    code that by definition has none. A module that is invalid *only* inside dead code is therefore
+    accepted here and rejected by a full validator.
 11. **Loops are identified at block granularity.** When two nested loops share a header block (their
     first instruction is the same, which happens when the inner loop opens immediately), the analysis
     reports one loop, not two: a block is the smallest unit, and both headers *are* that block. This
@@ -148,6 +184,15 @@ and is refused rather than approximated.
 13. **A partial body has no graph.** `disasm --cfg` prints `skipped: stopped at byte N ...` for the
     one SIMD helper instead of inventing blocks from half a function. The instruction listing still
     shows everything it decoded; only the graph refuses.
+14. **`if` conditions and block results are not folded into the outgoing edges.** The condition of an
+    `if` is a statement (`SIf`) on the block that ends with it, and the values a block hands on are
+    its `exit` expressions; the edge itself carries only types. This keeps a block's analysis local,
+    but it means S7 has to materialise edge values into variables — which is what the generated code
+    would do anyway, so the cost is one assignment per edge and not a redesign.
+15. **A `br` that leaves the function is emitted as `return`.** `br` to the outermost label and
+    `return` are the same instruction at run time; printing the first as a `br` would produce a label
+    with no enclosing label, which is not expressible in structured code. The two are distinguished
+    in the IR (`SReturn` vs `SBr`) so the loss of information is visible rather than silent.
 
 ## 5. Reproduce every claim
 
@@ -157,9 +202,12 @@ bash script/check.sh
 
 Every number quoted in the README or in the submission form must be reproducible by a command in
 `script/`; otherwise it does not belong in the document. The script currently verifies: formatting,
-three-target `moon check`, 95 unit tests on two targets, CLI usage paths, 8 fixtures decoded,
-18 malformed fixtures rejected with code + offset (7 of them at the instruction layer, each
-reporting the code written in its filename), byte-identical `info`, `disasm --ops` **and**
-`disasm --cfg` output across `wasm-gc`, `js` and `wasm`, a graph for every fixture with no body
-coming out irreducible, and a cross-check of every decoded mnemonic against wabt
+three-target `moon check`, 124 unit tests on two targets, CLI usage paths, 9 fixtures decoded,
+19 malformed fixtures rejected with code + offset (8 of them at the instruction layer, each
+reporting the code written in its filename — including one that decodes but does not type-check),
+byte-identical `info`, `disasm --ops`, `disasm --cfg` **and** `disasm --stack` output across
+`wasm-gc`, `js` and `wasm`, a graph for every fixture with no body coming out irreducible, the
+pinned recovery counts of the real artifact (72 of 79 analysed, 6 refused, 1 skipped, 0 rejected,
+111 spills of which 1 is a reordering hazard), both reordering hazards on the fixture that isolates
+them, and a cross-check of every decoded mnemonic against wabt
 (`4,386 matched, 0 mismatched, 62 not attempted`).

@@ -131,6 +131,11 @@ CODE_CASES = {
     "trailing_after_end_e005.wasm": one_func(b"\x0b\x01"),
     # i32.const with no operand left: the `end` byte is consumed as the value.
     "truncated_instr_e001.wasm": one_func(b"\x41"),
+    # Every instruction is valid and the body is well structured, but it leaves
+    # an f32 where the signature promises an i32. Only the typed stack
+    # simulation can see this, so it is the one sample the plain `disasm`
+    # listing accepts.
+    "type_mismatch_e011.wasm": one_func(b"\x43\x00\x00\x80\x3f"),
 }
 
 

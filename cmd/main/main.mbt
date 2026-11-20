@@ -128,8 +128,8 @@ fn run_info(args : Array[String]) -> Int32 {
 }
 
 ///|
-/// `disasm <file> [--ops|--stats|--cfg]`: decode every function body and print
-/// it.
+/// `disasm <file> [--ops|--stats|--cfg|--stack]`: decode every function body and
+/// print it.
 ///
 /// Unlike `info`, this can fail on a body the decoder rejects, and that is the
 /// point: `info` answers "what is in this file", `disasm` answers "what does the
@@ -140,9 +140,9 @@ fn run_disasm(args : Array[String]) -> Int32 {
     return EXIT_USAGE
   }
   let path = args[1]
-  // 0 listing, 1 ops, 2 stats, 3 control-flow graph. Last flag wins, so
-  // `--stats --cfg` is the same as `--cfg` rather than an error: a reviewer
-  // pasting flags should not have to think about ordering.
+  // 0 listing, 1 ops, 2 stats, 3 control-flow graph, 4 typed stack. Last flag
+  // wins, so `--stats --cfg` is the same as `--cfg` rather than an error: a
+  // reviewer pasting flags should not have to think about ordering.
   let mut mode = 0
   let mut i = 2
   while i < args.length() {
@@ -152,6 +152,8 @@ fn run_disasm(args : Array[String]) -> Int32 {
       mode = 2
     } else if args[i] == "--cfg" {
       mode = 3
+    } else if args[i] == "--stack" {
+      mode = 4
     }
     i = i + 1
   }
@@ -174,6 +176,8 @@ fn run_disasm(args : Array[String]) -> Int32 {
             @core.disasm_stats_text(m)
           } else if mode == 3 {
             @core.cfg_text_result(m, path)
+          } else if mode == 4 {
+            @core.stack_text_result(m, path)
           } else {
             @core.disasm_text(m, path)
           }
@@ -183,7 +187,10 @@ fn run_disasm(args : Array[String]) -> Int32 {
               EXIT_OK
             }
             Err(d) => {
-              println("moonlift: cannot decode the code section of '\{path}'")
+              // `--stack` adds type checking to the decode, so "cannot decode"
+              // would understate what failed.
+              let what = if mode == 4 { "type-check" } else { "decode" }
+              println("moonlift: cannot \{what} the code section of '\{path}'")
               println("  \{d.render_verbose()}")
               EXIT_REJECTED
             }

@@ -16,6 +16,7 @@ pub enum ErrorCode {
   E008BadIndex // index out of range (func / local / global / type / label)
   E009BadUtf8 // name section or import string is not valid UTF-8
   E010BadData // data / element segment out of bounds
+  E011BadStack // code section does not type-check
   E101Gc // gc / struct / array proposal (0xFB)
   E102Simd // fixed-width SIMD (0xFD)
   E103Threads // atomics / shared memory (0xFE)
@@ -27,6 +28,7 @@ pub enum ErrorCode {
   E109BulkMemory // bulk-memory / passive segment constructs
   E110MultiTable // call_indirect / memory.size naming a second table or memory
   E111IndirectCall // indirect call through a table
+  E112MultiValue // multi-value block type or multi-result call
 }
 
 ///|
@@ -47,6 +49,7 @@ pub fn all_codes() -> Array[ErrorCode] {
     E008BadIndex,
     E009BadUtf8,
     E010BadData,
+    E011BadStack,
     E101Gc,
     E102Simd,
     E103Threads,
@@ -58,6 +61,7 @@ pub fn all_codes() -> Array[ErrorCode] {
     E109BulkMemory,
     E110MultiTable,
     E111IndirectCall,
+    E112MultiValue,
   ]
 }
 
@@ -75,6 +79,7 @@ pub fn ErrorCode::tag(self : ErrorCode) -> String {
     E008BadIndex => "E008"
     E009BadUtf8 => "E009"
     E010BadData => "E010"
+    E011BadStack => "E011"
     E101Gc => "E101"
     E102Simd => "E102"
     E103Threads => "E103"
@@ -86,14 +91,19 @@ pub fn ErrorCode::tag(self : ErrorCode) -> String {
     E109BulkMemory => "E109"
     E110MultiTable => "E110"
     E111IndirectCall => "E111"
+    E112MultiValue => "E112"
   }
 }
 
 ///|
-/// Short human-readable class for an error code. The CLI prints this next to
-/// the tag so a user can tell "your file is broken" from "your file is fine
-/// but we refuse it".
-pub fn ErrorCode::kind(self : ErrorCode) -> String {
+/// True for codes that mean "this file is not valid WebAssembly".
+///
+/// The distinction carries real weight from S5 onwards: a malformed body is
+/// rejected (`disasm --stack` exits non-zero), while an unsupported construct is
+/// *refused per function* and the rest of the module is still reported. Deciding
+/// that by matching on `tag` strings would be a bug waiting to happen, so the
+/// classification lives here, once, and `kind` is derived from it.
+pub fn ErrorCode::is_malformed(self : ErrorCode) -> Bool {
   match self {
     E001Truncated
     | E002BadMagic
@@ -104,8 +114,21 @@ pub fn ErrorCode::kind(self : ErrorCode) -> String {
     | E007BadType
     | E008BadIndex
     | E009BadUtf8
-    | E010BadData => "malformed input"
-    _ => "unsupported construct"
+    | E010BadData
+    | E011BadStack => true
+    _ => false
+  }
+}
+
+///|
+/// Short human-readable class for an error code. The CLI prints this next to
+/// the tag so a user can tell "your file is broken" from "your file is fine
+/// but we refuse it".
+pub fn ErrorCode::kind(self : ErrorCode) -> String {
+  if self.is_malformed() {
+    "malformed input"
+  } else {
+    "unsupported construct"
   }
 }
 
@@ -123,6 +146,8 @@ pub fn ErrorCode::hint(self : ErrorCode) -> String {
     E008BadIndex => "index points past the end of its table"
     E009BadUtf8 => "name or import string is not valid UTF-8"
     E010BadData => "segment range exceeds memory or table bounds"
+    E011BadStack =>
+      "the code section does not type-check; run `disasm --stack` for the offset"
     E101Gc =>
       "rebuild without the GC proposal (use -mno-reference-types style flags)"
     E102Simd => "rebuild without SIMD (disable auto-vectorisation)"
@@ -138,6 +163,8 @@ pub fn ErrorCode::hint(self : ErrorCode) -> String {
     E110MultiTable => "only one table and one memory are supported"
     E111IndirectCall =>
       "a decompiled body cannot dispatch through a table; inline the call"
+    E112MultiValue =>
+      "rebuild without multi-value (several results, or a block typed by index)"
   }
 }
 

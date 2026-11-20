@@ -51,6 +51,11 @@ priv struct Layout {
   ops : Array[InstrRef]
   /// Per construct: 0 block, 1 loop, 2 if. Index 0 is the function body.
   kind : Array[Int32]
+  /// Per construct: its block type, so a consumer can ask what a branch to it
+  /// must supply without reopening the instruction stream. Index 0 is `Empty`
+  /// and is never consulted — a branch to the function body returns, and its
+  /// types come from the signature rather than from here.
+  btype : Array[BlockType]
   open : Array[Int32]
   close : Array[Int32]
   else_at : Array[Int32]
@@ -63,6 +68,10 @@ priv struct Layout {
   /// Per instruction: where a fall-through goes when it is *not* `at + 1`,
   /// which happens exactly when the instruction ends a then-arm.
   escape : Array[Int32]
+  /// Per position: where control really lands after a construct ends here.
+  /// Equal to the position itself except where an `else` arm starts, in which
+  /// case it is the end of the enclosing `if` — see the note in pass C.
+  resolve : Array[Int32]
   total : Int32
 }
 
@@ -93,7 +102,9 @@ fn Layout::target_of(self : Layout, at : Int32, depth : Int32) -> Int32 {
   if self.kind[c] == 1 {
     self.open[c]
   } else {
-    self.close[c]
+    // Leaving `c` can land on an `else` of an enclosing `if`, which is not
+    // where a completed construct continues.
+    self.resolve[self.close[c]]
   }
 }
 
@@ -210,6 +221,7 @@ fn build_layout(instrs : Array[InstrRef]) -> Layout? {
   }
   // --- C: ranges ---
   let ckind : Array[Int32] = [0]
+  let cbtype : Array[BlockType] = [Empty]
   let copen : Array[Int32] = [0]
   let cclose : Array[Int32] = [ops.length()]
   let celse : Array[Int32] = [-1]
@@ -224,6 +236,12 @@ fn build_layout(instrs : Array[InstrRef]) -> Layout? {
     let pa = parent_op[o]
     cid_of[o] = ckind.length()
     ckind.push(k)
+    cbtype.push(
+      match instrs[o].instr {
+        Block(t) | Loop(t) | If(t) => t
+        _ => Empty
+      },
+    )
     // An `if` occupies a real instruction slot, so its body starts one later.
     copen.push(if k == 2 { real_of[o] + 1 } else { real_of[o] })
     cclose.push(real_of[end_of[o]])
@@ -239,6 +257,43 @@ fn build_layout(instrs : Array[InstrRef]) -> Layout? {
   }
   let opened = Array::make(ops.length(), -1)
   let escape = Array::make(ops.length(), -1)
+  // Positions that start an `else` arm, and the resolution of "I just finished
+  // a construct here" past them.
+  //
+  // A real instruction can be *both* the first instruction of an `else` arm and
+  // the position control reaches after a construct ends — `end if2` immediately
+  // followed by `else if1` puts both at the same index. Arriving there from the
+  // then-arm does not enter the arm: it skips to the end of the enclosing `if`.
+  // Without this table the two readings collapse into one block, which then has
+  // two predecessors carrying different stacks — a real module
+  // (`_M0FPB12dec__count32`) fails type-checking because of it.
+  let else_pos = Array::make(ops.length() + 1, -1)
+  let mut q = 1
+  while q < ckind.length() {
+    let e = celse[q]
+    if e >= 0 && e <= ops.length() {
+      else_pos[e] = q
+    }
+    q = q + 1
+  }
+  let resolve = Array::make(ops.length() + 1, -1)
+  let mut p = 0
+  while p <= ops.length() {
+    let mut t = p
+    let mut steps = 0
+    // `close[k] > else_at[k]` always, so the chain strictly increases and
+    // cannot cycle; the counter is there to keep a corrupted layout from
+    // looping forever rather than to bound a legitimate case.
+    while else_pos[t] >= 0 && steps <= ckind.length() {
+      t = cclose[else_pos[t]]
+      steps = steps + 1
+      if t > ops.length() {
+        break
+      }
+    }
+    resolve[p] = t
+    p = p + 1
+  }
   let mut c = 1
   while c < ckind.length() {
     if ckind[c] == 2 {
@@ -247,13 +302,14 @@ fn build_layout(instrs : Array[InstrRef]) -> Layout? {
     }
     let e = celse[c]
     if e >= 1 {
-      escape[e - 1] = cclose[c]
+      escape[e - 1] = resolve[cclose[c]]
     }
     c = c + 1
   }
   Some({
     ops,
     kind: ckind,
+    btype: cbtype,
     open: copen,
     close: cclose,
     else_at: celse,
@@ -261,6 +317,7 @@ fn build_layout(instrs : Array[InstrRef]) -> Layout? {
     owner,
     opened,
     escape,
+    resolve,
     total: ops.length(),
   })
 }

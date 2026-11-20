@@ -9,7 +9,7 @@
 /// these tags verbatim, so a silent change would be a breaking change.
 test "error tags are unique and well formed" {
   let codes = all_codes()
-  assert_eq(codes.length(), 21)
+  assert_eq(codes.length(), 23)
   let seen : Array[String] = []
   for c in codes {
     let tag = c.tag()
@@ -18,7 +18,18 @@ test "error tags are unique and well formed" {
     seen.push(tag)
   }
   assert_eq(codes[0].tag(), "E001")
-  assert_eq(codes[17].tag(), "E108")
+  // Appending is allowed, renumbering is not: a tag, once published, keeps its
+  // number even when a new code joins its group (E011 sits between E010 and
+  // E101). What must not happen is `E108` becoming `E109`.
+  assert_eq(codes[11].tag(), "E101")
+  assert_eq(codes[codes.length() - 1].tag(), "E112")
+  let mut has_e108 = false
+  for c in codes {
+    if c.tag() == "E108" {
+      has_e108 = true
+    }
+  }
+  assert_true(has_e108)
 }
 
 ///|
