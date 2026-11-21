@@ -482,7 +482,7 @@ fn conv_text(
           "Float::from_int64(\{x})"
         }
       } else if is_i32_from {
-        "Double::from_int(\{x})"
+        "(\{recv(x)}.to_double())"
       } else {
         "(\{recv(x)}.to_double())"
       }

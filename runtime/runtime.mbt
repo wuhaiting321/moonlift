@@ -241,7 +241,7 @@ pub fn i64_extend32_s(a : Int64) -> Int64 {
 
 ///|
 pub fn i64_extend_i32_u(a : Int32) -> Int64 {
-  UInt64::extend_uint(a.reinterpret_as_uint()).reinterpret_as_int64()
+  a.reinterpret_as_uint().to_uint64().reinterpret_as_int64()
 }
 
 ///|
@@ -251,7 +251,7 @@ pub fn f32_convert_i32_u(a : Int32) -> Float {
 
 ///|
 pub fn f64_convert_i32_u(a : Int32) -> Double {
-  Double::convert_uint(a.reinterpret_as_uint())
+  a.reinterpret_as_uint().to_double()
 }
 
 ///|
@@ -261,7 +261,7 @@ pub fn f32_convert_i64_u(a : Int64) -> Float {
 
 ///|
 pub fn f64_convert_i64_u(a : Int64) -> Double {
-  Double::convert_uint64(a.reinterpret_as_uint64())
+  a.reinterpret_as_uint64().to_double()
 }
 
 ///|
@@ -607,7 +607,7 @@ pub fn Memory::load_i64_16s(self : Memory, a : Int32) -> Int64 {
 
 ///|
 pub fn Memory::load_i64_32u(self : Memory, a : Int32) -> Int64 {
-  UInt64::extend_uint(self.load_i32(a).reinterpret_as_uint()).reinterpret_as_int64()
+  self.load_i32(a).reinterpret_as_uint().to_uint64().reinterpret_as_int64()
 }
 
 ///|
