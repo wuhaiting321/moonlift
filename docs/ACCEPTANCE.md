@@ -10,7 +10,7 @@
 |---|---|---|---|---|
 | 1 | **MoonBit 为主** | 14,383 行 MoonBit 源码（`core/` 12,699 + `runtime/` 1,218 + `cmd/` 466），12 个 `_wbtest.mbt` 共 152 个白盒用例；CLI、解码器、分析器、代码生成器、调用计划全部用 MoonBit 写；生成物也是 MoonBit 包 | `find core runtime cmd -name '*.mbt' \| xargs wc -l`；`moon test --target wasm-gc` | ✅ |
 | 2 | **仓库公开** | 已公开：`https://github.com/wuhaiting321/moonlift`（PUBLIC，默认分支 `master`，158 个文件）；16 个提交的作者统一为 `wuhaiting321 <19177746962@163.com>` | `gh repo view wuhaiting321/moonlift --json visibility,defaultBranchRef` | ✅ |
-| 3 | **能够运行** | `info` / `disasm` / `decompile` / `verify` 四个子命令在 `wasm-gc`、`js`、`wasm` 三端输出逐字节一致；生成包 `moon check` 零错误零告警 | `bash script/check.sh`（cross-target 段）；`bash script/demo.sh` | ✅ |
+| 3 | **能够运行** | `info` / `disasm` / `decompile` / `verify` 四个子命令在 `wasm-gc`、`js`、`wasm` 三端输出逐字节一致；生成包 `moon check` 零错误零告警；GitHub Actions 在每次推送时复跑同一套门禁并全部通过 | `bash script/check.sh`（cross-target 段）；`bash script/demo.sh`；仓库页 Actions 标签 | ✅ |
 | 4 | **工作有效** | 41 个模块全部反编译成可编译包；384 个调用与 Node 跑原件的值逐一比对，384 匹配、0 失败；11 个行为测试；31 个真实编译器产物端到端通过 | `bash script/verify.sh`；`bash script/extended.sh` | ✅ |
 | 5 | **开源合规** | Apache-2.0（`LICENSE`）；`NOTICE` 标注格式与算法参考来源；`corpus/PROVENANCE.md` 说明 41 个 `.wasm` 的来源、许可证与 SHA-256（`corpus/good/SHA256SUMS`、`corpus/extended/SHA256SUMS`）；所有夹具均为自制或 MoonBit 编译器产出，无第三方二进制 | `cat NOTICE`；`cat corpus/PROVENANCE.md` | ✅ |
 | 6 | **AI 可解释** | `docs/AI_USAGE.md` 逐项说明 AI 参与了什么、人做了什么决策、每个 AI 产出如何被独立验证；`docs/DESIGN.md` 记录每个关键取舍及被否方案；`PLAN.md` 保留实测基线与计划偏差 | `cat docs/AI_USAGE.md` | ✅ |
@@ -65,3 +65,5 @@ cat README.md             # 项目申报书（见 README 顶部）
 ```
 
 **环境**：MoonBit 工具链 `0.1.20261020`（`moon check` 首次会联网拉取 `moonbitlang/x@0.5.6`）；Node 用于差分验证；`wabt` 是**可选**的对比工具，未安装时 `verify_decode.js` 打印 `SKIP`，演示脚本会注明，门禁把它记为 skipped 而不是失败。
+
+**CI**：`.github/workflows/ci.yml` 在每次推送时用 ubuntu runner 复跑 `bash script/check.sh`，先 `moon update` 拉取 registry 索引（全新 runner 没有索引，否则解析不到 `moonbitlang/x`），再安装 `wabt` 做解码对拍。CI 用当前 release 工具链而非 `0.1.20261020`（后者已不再由 CDN 提供），因此它同时也是一次向前兼容检查——当前工具链对整数→浮点转换的弃用告警就是这样被发现并修掉的。

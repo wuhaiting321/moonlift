@@ -1,5 +1,7 @@
 # moonlift 项目申报书
 
+[![CI](https://github.com/wuhaiting321/moonlift/actions/workflows/ci.yml/badge.svg)](https://github.com/wuhaiting321/moonlift/actions/workflows/ci.yml)
+
 > 2026 MoonBit Hackathon（11 月赛）
 > 本文档同时是仓库 README。文中每个数字都可由 `bash script/check.sh` 复现；跑不出来的数字不写。
 
