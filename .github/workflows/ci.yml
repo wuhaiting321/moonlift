@@ -1,0 +1,51 @@
+name: CI
+
+# Runs the same gate a reviewer runs locally: `bash script/check.sh`.
+# If this is green, the package builds on three targets, the 152 white-box
+# tests pass, the decoder agrees with wabt, every fixture decompiles into a
+# package that `moon check` accepts at zero warnings, and the generated code
+# matches the original modules under Node.
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    name: gate (3 targets, 152 tests, 384 differential calls)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up MoonBit
+        uses: hustcer/setup-moonbit@v1
+        with:
+          # Pinned to the toolchain the corpus and the pinned counts were
+          # produced with; a newer compiler can change warnings and codegen.
+          version: 0.1.20261020+2284bd2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install wabt (independent decoder cross-check)
+        run: npm --prefix corpus/tools ci
+
+      - name: Toolchain versions
+        run: |
+          moon version --all
+          node --version
+
+      - name: Full gate
+        run: bash script/check.sh
