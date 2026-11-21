@@ -41,6 +41,11 @@ good=$(ls corpus/good/*.wasm | wc -l | tr -d ' ')
 ext=$(ls corpus/extended/*.wasm | wc -l | tr -d ' ')
 bad=$(ls corpus/bad/*.wasm corpus/badcode/*.wasm | wc -l | tr -d ' ')
 wabt=$(node corpus/tools/verify_decode.js 2>/dev/null | grep -E '^matched' | tr -s ' ')
+# wabt is an optional dev dependency (corpus/tools/node_modules is not committed).
+# Say so instead of printing an empty cell, which reads like a failed check.
+if [ -z "$wabt" ]; then
+  wabt='not installed (optional: npm --prefix corpus/tools i wabt)'
+fi
 printf '%-42s %s\n' 'MoonBit source lines' "$lines"
 printf '%-42s %s\n' 'corpus modules (good + extended)' "$good + $ext = $((good + ext))"
 printf '%-42s %s\n' 'malformed fixtures' "$bad"

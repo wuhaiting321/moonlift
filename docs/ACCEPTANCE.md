@@ -63,3 +63,5 @@ cat BOUNDARY.md            # 支持矩阵 / 13 条语义偏差 / 19 条已知限
 cat docs/ACCEPTANCE.md     # 本表
 cat README.md             # 项目申报书（见 README 顶部）
 ```
+
+**环境**：MoonBit 工具链 `0.1.20261020`（`moon check` 首次会联网拉取 `moonbitlang/x@0.5.6`）；Node 用于差分验证；`wabt` 是**可选**的对比工具，未安装时 `verify_decode.js` 打印 `SKIP`，演示脚本会注明，门禁把它记为 skipped 而不是失败。
