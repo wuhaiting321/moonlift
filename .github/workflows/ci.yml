@@ -28,9 +28,11 @@ jobs:
       - name: Set up MoonBit
         uses: hustcer/setup-moonbit@v1
         with:
-          # Pinned to the toolchain the corpus and the pinned counts were
-          # produced with; a newer compiler can change warnings and codegen.
-          version: 0.1.20261020+2284bd2
+          # The corpus and the pinned counts were produced with 0.1.20261020.
+          # That exact build is no longer served by the CDN (403), so CI tracks
+          # the current release; the gate pins project-level counts only, and a
+          # newer compiler shows up as a diff rather than a silent pass.
+          version: latest
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
