@@ -425,6 +425,26 @@ fn bin_helper(t : ValType, k : BinKind) -> String {
 }
 
 ///|
+/// A method receiver cannot be a bare integer literal. MoonBit reads
+/// `63.to_int64()` as the float `63.` followed by an identifier, which is a
+/// parse error rather than a conversion. Parenthesise literals only; an
+/// identifier or an already-parenthesised expression is left as it is, so the
+/// generated code stays readable everywhere else.
+fn recv(x : String) -> String {
+  match x.get_char(0) {
+    Some(c) => {
+      let n = c.to_int()
+      if (n >= 48 && n <= 57) || n == 45 {
+        "(\{x})"
+      } else {
+        x
+      }
+    }
+    None => x
+  }
+}
+
+///|
 fn conv_text(
   from : ValType,
   to : ValType,
@@ -439,18 +459,18 @@ fn conv_text(
   let fdst = if is_f32_to { "f32" } else { "f64" }
   let src_i = if is_i32_from { "i32" } else { "i64" }
   match mode {
-    Wrap => "(\{x}.to_int())"
-    ExtendS => "(\{x}.to_int64())"
+    Wrap => "(\{recv(x)}.to_int())"
+    ExtendS => "(\{recv(x)}.to_int64())"
     ExtendU => "i64_extend_i32_u(\{x})"
     Demote => "Float::from_double(\{x})"
-    Promote => "(\{x}.to_double())"
+    Promote => "(\{recv(x)}.to_double())"
     Reinterpret =>
       if is_f32_from {
-        "(\{x}.reinterpret_as_int())"
+        "(\{recv(x)}.reinterpret_as_int())"
       } else if is_f32_to {
         "Float::reinterpret_from_int(\{x})"
       } else if vt_eq(from, F64) {
-        "(\{x}.reinterpret_as_int64())"
+        "(\{recv(x)}.reinterpret_as_int64())"
       } else {
         "Int64::reinterpret_as_double(\{x})"
       }
@@ -464,7 +484,7 @@ fn conv_text(
       } else if is_i32_from {
         "Double::from_int(\{x})"
       } else {
-        "(\{x}.to_double())"
+        "(\{recv(x)}.to_double())"
       }
     // The suffix names the *source* integer type: `f64.convert_i32_u` is
     // `f64_convert_i32_u`, and using the destination there would produce a
@@ -556,13 +576,23 @@ fn Emit::expr_raw(self : Emit, e : Expr) -> String {
       let x = self.expr(a)
       match k {
         Eqz => "(\{x} == 0)"
-        Clz => if vt_eq(t, I64) { "i64_clz(\{x})" } else { "(\{x}.clz())" }
-        Ctz => if vt_eq(t, I64) { "i64_ctz(\{x})" } else { "(\{x}.ctz())" }
+        Clz =>
+          if vt_eq(t, I64) {
+            "i64_clz(\{x})"
+          } else {
+            "(\{recv(x)}.clz())"
+          }
+        Ctz =>
+          if vt_eq(t, I64) {
+            "i64_ctz(\{x})"
+          } else {
+            "(\{recv(x)}.ctz())"
+          }
         Popcnt =>
           if vt_eq(t, I64) {
             "i64_popcnt(\{x})"
           } else {
-            "(\{x}.popcnt())"
+            "(\{recv(x)}.popcnt())"
           }
         Abs =>
           if vt_eq(t, F32) {
@@ -570,7 +600,7 @@ fn Emit::expr_raw(self : Emit, e : Expr) -> String {
           } else if vt_eq(t, F64) {
             "f64_abs(\{x})"
           } else if vt_eq(t, I64) {
-            "(\{x}.abs())"
+            "(\{recv(x)}.abs())"
           } else {
             // `i32.abs` of MIN is MIN in wasm — it wraps, it does not trap — and
             // the subtraction says so.
@@ -584,16 +614,16 @@ fn Emit::expr_raw(self : Emit, e : Expr) -> String {
           } else {
             "(-\{x})"
           }
-        Ceil => "(\{x}.ceil())"
-        Floor => "(\{x}.floor())"
-        Trunc => "(\{x}.trunc())"
+        Ceil => "(\{recv(x)}.ceil())"
+        Floor => "(\{recv(x)}.floor())"
+        Trunc => "(\{recv(x)}.trunc())"
         Nearest =>
           if vt_eq(t, F32) {
             "f32_nearest(\{x})"
           } else {
             "f64_nearest(\{x})"
           }
-        Sqrt => "(\{x}.sqrt())"
+        Sqrt => "(\{recv(x)}.sqrt())"
         Extend8S =>
           if vt_eq(t, I64) {
             "i64_extend8_s(\{x})"
@@ -645,7 +675,7 @@ fn Emit::expr_raw(self : Emit, e : Expr) -> String {
 ///|
 fn Emit::stmt(self : Emit, s : Stmt, blk : Int32) -> String {
   match s {
-    SLocal(i, e) => "\{local_name(i)} = \{self.expr(e)}"
+    SLocal(i, e) => "\{self.lname(i)} = \{self.expr(e)}"
     SGlobal(i, e) => "g\{i}.val = \{self.expr(e)}"
     STemp(k, e) => {
       let t = temp_ty(self.fs, blk, k)

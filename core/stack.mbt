@@ -521,6 +521,29 @@ fn cut_stack(s : Sim, n : Int32) -> Unit {
 }
 
 ///|
+/// Re-push a branch's payload so it survives in the block's exit stack.
+///
+/// Without this the block's exit expressions are empty (or, worse, a bare type
+/// marker), and an edge that has to hand the values to its successor has
+/// nothing to say. The payloads themselves are the only correct answer: they are
+/// the expressions the branch transfers, evaluated where the branch is.
+fn push_payload(s : Sim, wants : Array[ValType], vals : Array[Expr]) -> Unit {
+  let n = wants.length()
+  let mut k = 0
+  while k < n && k < vals.length() {
+    s.push(vals[k], wants[k])
+    k = k + 1
+  }
+  // A type the branch does not carry (a multi-value loop whose params the
+  // simulator cannot name) still has to occupy the slot, or the block's exit
+  // shape would disagree with the destination's entry shape.
+  while k < n {
+    s.push(EParam(0), wants[k])
+    k = k + 1
+  }
+}
+
+///|
 /// Materialise `e` into a fresh temporary and push it.
 fn Sim::spill(self : Sim, e : Expr, t : ValType) -> Unit {
   let id = self.temps
@@ -811,9 +834,7 @@ fn run_block(
         // A branch discards everything below the transferred values.
         let base = branch_base(l, i, d, bases)
         cut_stack(s, base)
-        for v in wants {
-          s.push(EParam(0), v)
-        }
+        push_payload(s, wants, vals)
         return finish(s, b, entry, false)
       }
       BrIf(d) => {
@@ -839,9 +860,7 @@ fn run_block(
         s.stmts.push(SBrTable(ls, d, vals, idx))
         let base = branch_base(l, i, d, bases)
         cut_stack(s, base)
-        for v in wants {
-          s.push(EParam(0), v)
-        }
+        push_payload(s, wants, vals)
         return finish(s, b, entry, false)
       }
       Return => {
@@ -852,9 +871,7 @@ fn run_block(
         // this, every `return` would look like it disagreed with the
         // fall-through off the end of the body.
         cut_stack(s, 0)
-        for v in env.results {
-          s.push(EParam(0), v)
-        }
+        push_payload(s, env.results, vals)
         return finish(s, b, entry, false)
       }
       Call(f) => {
@@ -1194,6 +1211,21 @@ pub fn analyze_func(m : Module, idx : Int32) -> Result[FuncStack, Diag] {
               E102Simd,
               0,
               "the signature uses v128, which has no MoonBit representation",
+            ),
+          ),
+        )
+      } else if t.results.length() > 1 {
+        // The emitter prints a single MoonBit result. Silently returning only
+        // `vs[0]` would make `scan_reads` think the other values are read and
+        // leave a live variable behind — and, worse, it would be a wrong answer
+        // wearing a clean compile. Refuse at the signature instead.
+        return Ok(
+          refused_stack(
+            idx,
+            Diag::new(
+              E112MultiValue,
+              0,
+              "the function returns \{t.results.length()} values; multi-value is outside the subset",
             ),
           ),
         )

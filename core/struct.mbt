@@ -394,18 +394,21 @@ fn resolve_xfer(l : Layout, g : Cfg, fs : FuncStack, b : Int32) -> Xfer {
       let (k, t) = transfer_of(l, at, branch_construct(l, at, d))
       { kind: k, target: t, table: [], dflt: -1, cond: None, vals, }
     }
-    SBrIf(d, _, cond) => {
+    SBrIf(d, vals, cond) => {
       let (k, t) = transfer_of(l, at, branch_construct(l, at, d))
-      { kind: k, target: t, table: [], dflt: -1, cond: Some(cond), vals: [], }
+      // `vals` is kept: a `br_if` inside a `(result i32)` block carries a value
+      // on the taken side, and the edge is the only place it can be written
+      // down. It is the same list the fall-through keeps on the stack.
+      { kind: k, target: t, table: [], dflt: -1, cond: Some(cond), vals, }
     }
-    SBrTable(ls, d, _, idx) => {
+    SBrTable(ls, d, vals, idx) => {
       let table : Array[Int32] = []
       for x in ls {
         let (_, t) = transfer_of(l, at, branch_construct(l, at, x))
         table.push(t)
       }
       let (_, dt) = transfer_of(l, at, branch_construct(l, at, d))
-      { kind: x_table, target: -1, table, dflt: dt, cond: Some(idx), vals: [], }
+      { kind: x_table, target: -1, table, dflt: dt, cond: Some(idx), vals, }
     }
     SReturn(vals) =>
       { kind: x_ret, target: -1, table: [], dflt: -1, cond: None, vals, }
@@ -574,6 +577,29 @@ fn succ_block(ctx : Ctx, t : Int32) -> Int32 {
 /// only when the target has an entry. That keeps the tree readable without
 /// hiding anything: an edge that carries nothing has nothing to show.
 fn push_edges(ctx : Ctx, out : Array[Node], from : Int32, to : Int32) -> Unit {
+  push_edges_vals(ctx, out, from, to, ctx.fs.blocks[from].exit_exprs)
+}
+
+///|
+/// The same edge, with the values the branch transfers given explicitly.
+///
+/// Two statements describe the same edge and they do not always agree. The
+/// branch statement knows exactly what it carries; the block's exit stack knows
+/// what was left on it, which is the same thing whenever the branch carries
+/// everything the successor needs. It does not when the branch carries *less*:
+/// a branch to a `loop` transfers the loop's parameters, which the MVP subset
+/// cannot express, so `wants` is empty while the destination — a loop body
+/// re-entered with the values it reads at its top — still has an entry shape.
+/// There the exit stack is the only record of the values, so the longer of the
+/// two lists wins. When they disagree in the other direction the statement is
+/// used, because a type marker on the exit stack is not a value.
+fn push_edges_vals(
+  ctx : Ctx,
+  out : Array[Node],
+  from : Int32,
+  to : Int32,
+  vals : Array[Expr],
+) -> Unit {
   if to < 0 || to >= ctx.fs.blocks.length() {
     return
   }
@@ -582,16 +608,17 @@ fn push_edges(ctx : Ctx, out : Array[Node], from : Int32, to : Int32) -> Unit {
     return
   }
   out.push(NEdge(from, to))
-  let vals = ctx.fs.blocks[from].exit_exprs
+  let exit = ctx.fs.blocks[from].exit_exprs
+  let src = if vals.length() >= n { vals } else { exit }
   let mut k = 0
-  while k < n && k < vals.length() {
+  while k < n && k < src.length() {
     // The type comes from the *destination* block's entry shape: that is what
     // the value has to be, and it is the only statement the successor can read.
     out.push(
       NAssign(
         in_temp(ctx, to, k),
         ctx.fs.blocks[to].entry[k],
-        subst(ctx, from, vals[k]),
+        subst(ctx, from, src[k]),
       ),
     )
     k = k + 1
@@ -685,7 +712,9 @@ fn table_arm(
   vals : Array[Expr],
 ) -> Node {
   let arm : Array[Node] = []
-  push_edges(ctx, arm, b, succ_block(ctx, t))
+  // Every arm of the table transfers the same list, taken out of the branch
+  // instruction rather than from the block's exit stack.
+  push_edges_vals(ctx, arm, b, succ_block(ctx, t), vals)
   arm.push(transfer_node(ctx, at, t, vals))
   NSeq(arm)
 }
@@ -710,7 +739,7 @@ fn xfer_nodes(ctx : Ctx, b : Int32, x : Xfer) -> Array[Node] {
     match x.cond {
       Some(c) => {
         let arm : Array[Node] = []
-        push_edges(ctx, arm, b, succ_block(ctx, x.target))
+        push_edges_vals(ctx, arm, b, succ_block(ctx, x.target), x.vals)
         arm.push(tr)
         out.push(NIf(c, arm, []))
         // The other side of a conditional branch is the fall-through, and it
@@ -720,7 +749,7 @@ fn xfer_nodes(ctx : Ctx, b : Int32, x : Xfer) -> Array[Node] {
         }
       }
       None => {
-        push_edges(ctx, out, b, succ_block(ctx, x.target))
+        push_edges_vals(ctx, out, b, succ_block(ctx, x.target), x.vals)
         out.push(tr)
       }
     }

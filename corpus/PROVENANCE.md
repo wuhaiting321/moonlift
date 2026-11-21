@@ -17,9 +17,12 @@ committed: `bash script/check.sh` never needs the network or a toolchain.
 | `globals.wasm` | `src/globals.wat` (hand-written) | 180 B | Mutable and immutable globals, one initialiser of each value type, plus `start` |
 | `imports.wasm` | `src/imports.wat` (hand-written) | 221 B | Function imports shift the whole index space; export names that need sanitising |
 | `memory.wasm` | `src/memory.wat` (hand-written) | 319 B | Every load/store width, alignment hints, non-UTF-8 data segment |
+| `nested.wasm` | `src/nested.wat` (hand-written) | 171 B | A `br_table` inside a `loop` inside a `block`, with a value carried across the dispatch — the case where the branch's payload, not the block's exit stack, has to be written at the edge |
 | `stack.wasm` | `src/stack.wat` (hand-written) | 210 B | The three reordering hazards (local / memory / global) and the three shapes that must *not* spill (`local.tee`, a call consumed by `drop`, a value crossing a block boundary) |
 | `table.wasm` | `src/table.wat` (hand-written) | 246 B | `call_indirect` with a type immediate and an element segment |
 | `moonbit_fib.wasm` | MoonBit compiler `0.1.20261020`, `moon build --target wasm` | 20,312 B | Real compiler output: 79 functions, 1 import, `datacount`, name section, 736 bytes of static data |
+
+SHA-256 for every one of these ten binaries is in `corpus/good/SHA256SUMS`.
 
 Command for the hand-written fixtures:
 
@@ -70,6 +73,51 @@ Two facts from this file drive design decisions elsewhere:
 2. **Two signatures return multiple values**, and one function declares a `v128`
    local (its memcpy helper). Both are parsed and reported by `info`, and both
    are refused per function at code-generation time rather than per module.
+
+## `corpus/extended/` — 31 modules from the real compiler
+
+These are the breadth layer. Each one is a complete, self-contained MoonBit
+program in `corpus/tools/sources/<name>.mbt`, compiled with the same toolchain as
+`moonbit_fib.wasm`:
+
+```sh
+moon 0.1.20261020
+moon build --target wasm
+```
+
+`python corpus/tools/gen_corpus.py` reproduces the whole set: for each source it
+creates a throwaway module, builds it, and copies
+`_build/wasm/debug/build/main/main.wasm` to `corpus/extended/<name>.wasm`. Every
+program prints its result, so the compiler cannot discard the computation. The
+sources cover integer/float/i64 arithmetic, conversions, shifts, comparisons,
+loops (while / for / nested / break+continue), recursion, pattern matching on
+integers, options, results and enums, structs, arrays, strings, tuples, closures,
+generics, traits, dispatch tables and a mutable global.
+
+| | |
+|---|---|
+| Modules | 31, listed individually in `corpus/extended/SHA256SUMS` |
+| Total corpus | 41 `.wasm` modules (`corpus/good/` 10 + `corpus/extended/` 31) |
+| Checksums | `corpus/extended/SHA256SUMS`, verified by `script/extended.sh` |
+| Gate | `bash script/extended.sh`: checksum → decode → decompile → `moon check` with zero warnings, for all 31 |
+
+The extended modules are deliberately **not** in `corpus/good/`. The good
+fixtures are pinned to exact instruction, node and block counts, which is the
+right way to catch a change in moonlift. Compiler output changes with every
+toolchain release; pinning its internals would make the gate fail on an upgrade
+rather than on a bug. What is pinned here is the shape of the claim instead:
+every real module decodes, and every generated package compiles cleanly. These
+modules all import a host for `println`, so they are not run against Node — the
+differential harness (`script/verify.sh`) covers the self-contained fixtures in
+`corpus/good/`.
+
+Building this layer found three bugs that the ten hand-written fixtures missed,
+all of them in code that compiled but was wrong or uncompilable on real output:
+a `63.to_int64()` parse error (a bare integer literal before a method call),
+an assigned-but-never-read local whose declaration was underscored (`_l9`)
+while the assignment still said `l9`,
+and a function with two results whose second value was silently dropped. All
+three are fixed and covered by `script/extended.sh` or a unit test.
 
 ## `corpus/badcode/` — valid container, broken instruction stream
 

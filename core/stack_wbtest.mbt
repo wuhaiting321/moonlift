@@ -380,6 +380,31 @@ test "stack: a call returning two values is refused as multi-value" {
 }
 
 ///|
+test "stack: a function returning two values is refused at the signature" {
+  // (module (func (result i32 i32) i32.const 1 i32.const 2))
+  // The emitter can only print one MoonBit result. Before this refusal it
+  // printed `vs[0]` and silently dropped the rest, which also left a local
+  // "read" by the scan but unused in the generated file.
+  let wasm = b"\x00\x61\x73\x6d\x01\x00\x00\x00\x01\x06\x01\x60\x00\x02\x7f\x7f\x03\x02\x01\x00\x0a\x08\x01\x06\x00\x41\x01\x41\x02\x0b"
+  match decode_bytes(wasm) {
+    Err(d) => abort("decode failed: \{d.render()}")
+    Ok(m) =>
+      match analyze_func(m, 0) {
+        Err(d) => abort("unexpected hard error: \{d.render()}")
+        Ok(fs) =>
+          match fs.refusal {
+            Some(d) => {
+              assert_eq(d.code.tag(), "E112")
+              assert_true(d.message.contains("multi-value"))
+            }
+            None =>
+              abort("a two-result function must be refused, not truncated")
+          }
+      }
+  }
+}
+
+///|
 test "stack: a memory instruction in a module without memory is an index error" {
   let e : FuncEnv = {
     locals: [I32],

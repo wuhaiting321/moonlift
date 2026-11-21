@@ -223,7 +223,7 @@ pub fn report(m : Module, label : String) -> String {
   let multi = m.multi_value_func_count()
   if multi > 0 {
     notes.push(
-      "\{multi} signature(s) return more than one value (multi-value proposal); code generation must fall back to a boxed stack for those functions",
+      "\{multi} signature(s) return more than one value (multi-value proposal); code generation refuses those functions with E112 and emits a trapping stub",
     )
   }
   let unsupported = m.unsupported_type_func_count()

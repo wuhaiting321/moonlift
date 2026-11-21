@@ -84,7 +84,7 @@ functions
      ...
 
 notes
-  - 2 signature(s) return more than one value (multi-value proposal); code generation must fall back to a boxed stack for those functions
+  - 2 signature(s) return more than one value (multi-value proposal); code generation refuses those functions with E112 and emits a trapping stub
   - 1 function(s) declare v128 locals (typical of compiler memcpy helpers); code generation refuses them individually
 ```
 

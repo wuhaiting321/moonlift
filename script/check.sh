@@ -354,6 +354,7 @@ fib.wasm|3 emitted, 0 refused, 0 skipped
 globals.wasm|5 emitted, 0 refused, 0 skipped
 imports.wasm|3 emitted, 0 refused, 0 skipped
 memory.wasm|6 emitted, 0 refused, 0 skipped
+nested.wasm|2 emitted, 0 refused, 0 skipped
 stack.wasm|8 emitted, 0 refused, 0 skipped
 table.wasm|4 emitted, 2 refused, 0 skipped
 moonbit_fib.wasm|72 emitted, 6 refused, 1 skipped
@@ -382,11 +383,12 @@ step "decompile: the generated package behaves like the original"
 # *original* module under Node (`corpus/tools/oracle.js`), so this compares two
 # implementations rather than one implementation against itself.
 #
-# Both bugs found while writing the emitter were invisible to the compile check:
+# Three bugs found while writing the emitter were invisible to the compile check:
 # a conditional branch to the end of the body emitted as an unconditional
-# `return` (a loop that runs once), and a block entry value read without ever
-# being written. Both change values, and only these tests would have said so.
-for pair in control:control_wbtest.mbt fib:fib_wbtest.mbt; do
+# `return` (a loop that runs once), a block entry value read without ever being
+# written, and a dispatch that carries a value read from a temporary nobody
+# stored. All three change values, and only these tests would have said so.
+for pair in control:control_wbtest.mbt fib:fib_wbtest.mbt nested:nested_wbtest.mbt; do
   f=${pair%%:*}
   t=${pair##*:}
   d="$gen/$f"
@@ -419,10 +421,10 @@ if bash script/verify.sh > /tmp/moonlift_verify.log 2>&1; then
   matched=$(printf '%s' "$line" | sed -E 's/.*matched: ([0-9]+).*/\1/')
   skipped=$(printf '%s' "$line" | sed -E 's/.*skipped \(trap\/NaN\): ([0-9]+).*/\1/')
   failed=$(printf '%s' "$line" | sed -E 's/.*failed: ([0-9]+).*/\1/')
-  if [ "$compared" -eq 354 ] && [ "$matched" -eq 354 ] && [ "$failed" -eq 0 ]; then
-    printf 'ok   354 calls compared against Node, 354 matched, %s skipped\n' "$skipped"
+  if [ "$compared" -eq 384 ] && [ "$matched" -eq 384 ] && [ "$failed" -eq 0 ]; then
+    printf 'ok   384 calls compared against Node, 384 matched, %s skipped\n' "$skipped"
   else
-    printf 'FAIL verify: %s compared, %s matched, %s failed (expected 354/354/0)\n' \
+    printf 'FAIL verify: %s compared, %s matched, %s failed (expected 384/384/0)\n' \
       "$compared" "$matched" "$failed"
     fail=1
   fi
@@ -529,6 +531,22 @@ for f in corpus/good/control.wasm corpus/good/stack.wasm corpus/good/moonbit_fib
     fail=1
   fi
 done
+
+step "extended corpus: real compiler output, checked end to end"
+# `corpus/extended/` holds 31 modules built by MoonBit's own compiler, each with
+# a recorded SHA-256 and the source that produced it. `script/extended.sh`
+# verifies the checksum, decodes the module, decompiles it and runs `moon check`
+# on the generated package with zero warnings. These are deliberately separate
+# from `corpus/good/`: their internals are compiler-version-dependent, so pinning
+# instruction counts on them would fail on a toolchain upgrade, not on a bug.
+if bash script/extended.sh > /tmp/moonlift_extended.log 2>&1; then
+  printf 'ok   %s\n' "$(grep '^extended:' /tmp/moonlift_extended.log | tail -1)"
+  printf 'ok   %s\n' "$(grep 'modules,' /tmp/moonlift_extended.log | tail -1)"
+else
+  printf 'FAIL extended corpus\n'
+  grep -E '^(FAIL|extended:)' /tmp/moonlift_extended.log | head -10
+  fail=1
+fi
 
 printf '\n'
 if [ "$fail" -eq 0 ]; then
