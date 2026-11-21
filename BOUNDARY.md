@@ -2,8 +2,9 @@
 
 This file is normative. If the code and this document disagree, that is a bug in one of them.
 
-Version: 0.1.0 (stage S8). Sections marked *(S10)* are filled in as the corresponding stage lands;
-what is written below is already true of the shipped code.
+Version: 0.1.0 (final, stages S0–S11 complete). Every section below describes shipped code,
+not a plan; §3's deviations and §4's limitations are the complete lists. If a claim here and a
+command in `script/` disagree, that is a bug in one of them.
 
 ---
 
@@ -15,7 +16,7 @@ what is written below is already true of the shipped code.
 | Sections | type(1), import(2), function(3), table(4), memory(5), global(6), export(7), start(8), element(9), code(10), data(11), datacount(12), custom(0) | unknown section id | `E005` |
 | Section order | the spec order, including `datacount` between `element` and `code` | duplicated or out-of-order section | `E005` |
 | Value types | `i32` `i64` `f32` `f64`, plus `v128` **recognised but never generated** | `funcref` / `externref` outside a table | `E101` |
-| Function signatures | any arity, zero or more results | — (multi-value is parsed and flagged; codegen refuses those functions individually) | — |
+| Function signatures | any arity, zero or **one** result | a signature with several results (`E112`, per function) | `E112` |
 | Instructions | every opcode `0x00`–`0xC4` with a known operand length: control, parametric, variable, memory, the numeric block, sign extension, plus `0xFC` bulk memory and the eight saturating truncations | `0xD0`–`0xD2` (reference types), `0xFB`, `0x1C`, tail calls, exception opcodes | `E006`, `E007`, `E101`, `E104`, `E105` |
 | Instructions with an unknown operand length | nothing — decoding **stops** at `0xFD`/`0xFE` and the body is marked partial | — | partial body, reported by `disasm` |
 | Memories | exactly one, 32-bit | `memory64`, multi-memory, shared memory | `E106`, `E103` |
@@ -24,13 +25,14 @@ what is written below is already true of the shipped code.
 | Data / element segments | active, table/memory 0, i32 constant offset | passive segments, element expressions | `E109` |
 | Control flow | reducible CFGs — guaranteed by the decoder's label-depth check, not by luck; measured 0 irreducible in 78 bodies | a `br` / `br_if` / `br_table` depth beyond the enclosing labels; irreducible CFGs are unreachable from this subset (`E108` reserved, see §3 D3) | `E008`, `E108` |
 | Typing | every body the spec validates: operand types, block results, branch payloads, function result | a body that does not type-check (only reachable from a hand-patched or non-conforming producer) | `E011` |
-| Multi-value | recognised (type-index block types, signatures with several results) and reported by `info` | *generated*: a block typed by index, or a call returning several values | `E112` |
+| Multi-value | recognised (type-index block types, signatures with several results) and reported by `info` | *generated*: a block typed by index, a call returning several values, or a function with several results | `E112` |
 
 **Status.** Everything in the table is implemented and tested (S2 = container, S3 = instruction
 decoder + `disasm`, S4 = control-flow graph, S5 = typed stack simulation and type checking, S6 =
-structuring back to `while` / `if` / `match`, S7 = MoonBit code generation). §3 lists the deviations
-structuring and code generation introduce; they are the complete list, and each one is a decision
-with a reason rather than an oversight.
+structuring back to `while` / `if` / `match`, S7 = MoonBit code generation, S8 = differential
+verification, S9 = a 41-module corpus, S10 = this document, S11 = the acceptance material). §3 lists
+the deviations structuring and code generation introduce; they are the complete list, and each one
+is a decision with a reason rather than an oversight.
 
 **Instruction-level rule: a wrong *length* stops, a wrong *value* is reported.** An opcode whose
 operand size we do not know (`0xFD` SIMD, `0xFE` atomics) cannot be skipped, because guessing would
@@ -73,8 +75,8 @@ tree is information the format never lost. Two properties are asserted rather th
 **every reachable block is emitted exactly once** (`blocks emitted N of N` in `--struct-stats`, and a
 per-function `visited == reachable` test), and **no `br` / `br_if` / `br_table` / bare `if (...)`
 statement survives into the output** — a structurer whose fallback is "leave the graph as it was"
-would otherwise pass every test while doing nothing. Both are checked on all nine fixtures and on the
-real artifact.
+would otherwise pass every test while doing nothing. Both are checked on all ten good fixtures and on
+the real artifact.
 
 **Typed stack contract.** Each block is simulated once, in block-index order, which is a topological
 order of the forward edges (a loop's back edge points at a lower index). A block's entry is the exit
@@ -132,7 +134,7 @@ and a test asserts that the tags stay unique and that the count matches.
 | E109 | unsupported | bulk memory | no passive segments, no `memory.copy`/`fill` |
 | E110 | unsupported | second table/memory named | one table, one memory |
 | E111 | unsupported | indirect call through a table | inline the call |
-| E112 | unsupported | multi-value block type or multi-result call | rebuild without multi-value |
+| E112 | unsupported | multi-value block type, multi-result call, or a function with several results | rebuild without multi-value |
 
 Rule: **reject, never silently degrade.** Emitting code that compiles but computes the wrong value is
 the one failure mode this project refuses to have.
@@ -140,11 +142,12 @@ the one failure mode this project refuses to have.
 Every diagnostic carries the absolute byte offset of the field that failed, not of the section it is
 in. `E004` on a section size points at the LEB128 byte, not at the section id.
 
-## 3. Control-flow deviations *(S10)*
+## 3. Control-flow and code-generation deviations
 
-Populated during S6/S7. Each entry states: deviation, reason, observable impact, and whether it is
-acceptable for the declared subset. `E108` is reserved for the one case that is *not* acceptable and
-is refused rather than approximated.
+Each entry states: deviation, reason, observable impact, and whether it is acceptable for the
+declared subset. `E108` is reserved for the one case that is *not* acceptable and is refused rather
+than approximated. D1–D11 came out of S6–S8; D12–D13 are the two corrections S9's real-compiler
+corpus forced.
 
 ### D1 · Every `block` becomes a one-shot `while true`, not a labelled scope
 
@@ -172,8 +175,8 @@ turns it into a `continue` if it names the enclosing loop.
 one block per case, which is what an unconditional Relooper produces and which makes even a plain
 `if` unreadable.
 
-**Impact.** `brk` is dead weight in the emitted function signature (S7 will keep it as a local,
-never as a parameter) and it is the one piece of state a reader has to hold in their head. It is kept
+**Impact.** `brk` is dead weight in the emitted function body (S7 keeps it as a local, never as a
+parameter) and it is the one piece of state a reader has to hold in their head. It is kept
 to the minimum: a direct `br 0` out of a `loop` is still a plain `continue`, a `br_if` to the
 innermost `block` is still a plain `break` (verified by a test that asserts `brk = 1` is *absent* from
 that function's output), and `switches 0` in `--struct-stats` shows the real artifact needed no
@@ -225,14 +228,20 @@ so it is decided exactly.
 **Impact.** None on semantics; strictly less noise. `corpus/good/control.wasm` exercises both cases
 (`$guard` has no wrap, `$find_limit` wraps one arm).
 
-### D6 · Multi-value and `call_indirect` bodies are refused per function — `E111`, `E112`
+### D6 · Multi-value, `call_indirect` and multi-result bodies are refused per function — `E111`, `E112`
 
 **Deviation.** A body is emitted as a whole or refused as a whole. MoonBit functions return one
 value, and there is no way to reproduce a table dispatch from recovered source, so 6 of 79 bodies in
-the real artifact are refused by name instead of approximated.
+the real artifact are refused by name instead of approximated. A function whose *signature* declares
+two or more results is refused at the signature, before any instruction is simulated: the emitter
+can only print `vs[0]`, and silently dropping the rest would be a wrong answer wearing a clean
+compile (this is what S9 found in the compiler's `umul128` helper; the fix is pinned by a unit test
+and by `script/extended.sh`).
 
 **Reason.** A decompiler that produces a *compiling* function computing the wrong value is worse than
-one that names the function it cannot translate.
+one that names the function it cannot translate. The same `E112` also covers a block typed by index
+and a call returning several values, so the refusal is one rule with three entry points, not three
+special cases.
 
 **Impact.** Each refusal is reported with its function index, its name, the byte offset and the code
 (`--struct-stats` lists all six). The remaining 72 bodies are complete; nothing is silently dropped —
@@ -323,15 +332,57 @@ its export `f4` returns it. Without the call the generated `f4()` answers 0 wher
 1 — which is why `script/verify.sh` calls `moonlift_init()` first, and why the fixture is in the
 differential run rather than the smoke tests.
 
+### D12 · A branch's payload is written at the edge, from the branch statement
+
+**Deviation.** Two records describe the same edge and they do not always agree. `SBr` / `SBrIf` /
+`SBrTable` carry the values the branch transfers; a block's `exit_exprs` record what was left on its
+stack. When a branch-terminated block ends, the simulator cuts the stack to the target's base and
+pushes the payloads back, so the two are the same *values*. The structurer reads the **statement**,
+because a type marker left on the exit stack is not a value, and writes the payload into the
+destination's temp before issuing the `break` / `continue` / `return`. When the statement carries
+*fewer* values than the destination needs — a branch to a `loop` transfers the loop's parameters,
+which the MVP subset cannot express, so `wants` is empty while the loop body still re-enters with
+the values it reads at its top — the longer exit stack wins.
+
+**Reason.** Found by `corpus/good/nested.wasm`, the first fixture with a value on the stack *at* a
+`br_table`: reading `exit_exprs` alone assigned an unbound temporary, while reading only the
+statement lost the back-edge values of the real compiler's `radix::count32` loop. Neither record is
+sufficient alone; the rule "use the statement, fall back to the longer exit stack" is the smallest
+one that is correct on both.
+
+**Impact.** One `NAssign` per edge value, emitted in the predecessor — the last point where the
+expression that produced the value is still correct. The `nested` smoke test pins all three arms
+(back edge, `+10` arm, `*3` arm) against the original module; `script/extended.sh` pins the loop
+case across 31 real modules. A wrong choice here compiles cleanly and changes values, which is why
+both a behavioural test and a generated-package `moon check` guard it.
+
+### D13 · A bare integer literal cannot be a method receiver
+
+**Deviation.** `63.to_int64()` is a parse error in MoonBit: the lexer reads `63.` as the start of a
+float literal. Every method-call spelling in the emitter (`to_int64`, `to_double`, `reinterpret_as_int`,
+`clz`, `ceil`, `sqrt`, …) parenthesises a receiver that starts with a digit or a minus sign, and
+leaves identifiers and already-parenthesised expressions alone.
+
+**Reason.** Real compiler output puts constants directly under conversions (`i64.extend_i32_u(63)`);
+the ten hand-written fixtures never did, so ten clean `moon check` runs did not cover it. S9's
+`arith_double`, `arith_float`, `conversions` and `arith_i64` all failed until this was fixed.
+
+**Impact.** Cosmetic only — `((63).to_int64())` instead of an unparseable `63.to_int64()`. No
+semantics change. Pinned by `script/extended.sh`, which requires every one of the 31 generated
+packages to compile at zero warnings.
+
 ## 4. Known limitations at 0.1.0
 
-1. **The differential run covers exports, not bodies.** `script/verify.sh` compares 354 calls across
-   the 7 fixtures that do not need a host, and every one matches. What it does *not* do: reach a
+1. **The differential run covers exports, not bodies.** `script/verify.sh` compares 384 calls across
+   the 8 fixtures that do not need a host, and every one matches; a further 164 calls where the
+   original traps or returns NaN are skipped and counted separately. What it does *not* do: reach a
    function that is not exported (nothing can call it, but nothing proves it either), or compare
    anything inside a module that imports a host (`imports`, `moonbit_fib`), or invent argument
    combinations — the plan is a fixed diagonal and four anchored rows over a fixed value pool. A
    random-input mode is possible and was deliberately not built: a failure has to be reproducible
-   from the report alone.
+   from the report alone. The 31 extended-corpus modules are also not compared: they all import a
+   host for `println`, so Node cannot instantiate them; what is checked for them is decode and a
+   clean generated package instead.
 2. **native backend unverified.** This machine has no MSVC and `--target llvm` requires a nightly
    toolchain (`missing prelude.mi`). Verification therefore runs on `wasm`, `wasm-gc` and `js`.
    Installing VS Build Tools makes native available; it does not change any correctness criterion,
@@ -352,9 +403,11 @@ differential run rather than the smoke tests.
    `b"\x03abc"` decodes to `"扡"`. `core/utf8.mbt` contains a real decoder; do not "simplify" it away.
 8. **MoonBit's own wasm output is not in the MVP subset.** It emits a `datacount` section,
    multi-value signatures, `v128` locals in its memcpy helper, and bulk-memory/SIMD instructions.
-   `info` parses the first three (they are structural); the instruction decoder reads 4,423 of its
-   4,485 instructions and stops at the SIMD prefix in `..._blit__from__string__simd`.
-   `moonbit_fib.wasm` in `corpus/good/` is the evidence, and `moonlift disasm --stats` prints it.
+   `info` parses the first three (they are structural). Across the 10 good fixtures the decoder is
+   cross-checked against wabt: **4,485 instructions agree, 0 mismatch**, and the 62 instructions
+   after the SIMD prefix in `..._blit__from__string__simd` are deliberately not attempted.
+   `moonbit_fib.wasm` in `corpus/good/` is the evidence, and `moonlift disasm --stats` prints the
+   one partial body.
 9. **Alignment hints are validated, not ignored.** An `align=` exponent larger than the natural
    alignment of the access is a spec violation; it is rejected with `E007` rather than carried into
    generated code, where it would produce a misaligned read.
@@ -389,6 +442,20 @@ differential run rather than the smoke tests.
     `return` are the same instruction at run time; printing the first as a `br` would produce a label
     with no enclosing label, which is not expressible in structured code. The two are distinguished
     in the IR (`SReturn` vs `SBr`) so the loss of information is visible rather than silent.
+16. **A refused multi-result function has a trapping stub, not a one-value approximation.** The
+    generated package is still buildable and its other functions still work, but calling that stub
+    aborts. This is the observable cost of `E112` at the signature (§3 D6).
+17. **The extended corpus is checked for shape, not behaviour.** All 31 real-compiler modules decode
+    and every generated package compiles at zero warnings, but their bodies are never executed: they
+    import a host for `println`. `script/extended.sh` says so at the top; the differential claim in
+    §5 applies to `corpus/good/` only.
+18. **The full gate takes about three and a half minutes.** `script/check.sh` runs `moon check` on
+    31 generated packages in addition to the three-target build, 152 unit tests on two targets, the
+    wabt cross-check and the differential run. It needs no network and no C toolchain; on a machine
+    with `native` available the same commands work unchanged.
+19. **The repository is not yet public.** All work is committed locally; no git remote is configured
+    and nothing has been pushed. Publishing is a separate, explicit step — see
+    `docs/申报书.md` for the one item that has to be ticked before submission.
 
 ## 5. Reproduce every claim
 
@@ -398,7 +465,7 @@ bash script/check.sh
 
 Every number quoted in the README or in the submission form must be reproducible by a command in
 `script/`; otherwise it does not belong in the document. The script currently verifies: formatting,
-three-target `moon check`, 151 unit tests on two targets, CLI usage paths, 9 fixtures decoded,
+three-target `moon check`, 152 unit tests on two targets, CLI usage paths, 10 good fixtures decoded,
 19 malformed fixtures rejected with code + offset (8 of them at the instruction layer, each
 reporting the code written in its filename — including one that decodes but does not type-check),
 byte-identical `info`, `disasm --ops`, `disasm --cfg`, `disasm --stack` **and** `disasm --struct`
@@ -408,21 +475,23 @@ skipped, 0 rejected, 111 spills of which 1 is a reordering hazard), both reorder
 fixture that isolates them, the structurer on every fixture (no raw `br` / `br_if` / `br_table` /
 `if (...)` may survive; `blocks emitted 395 of 395`; `nodes 1115`, `guards 32`, `switches 0`, `max
 depth 7`; and `structured + skipped + refused` must equal the function count), a cross-check of
-every decoded mnemonic against wabt (`4,423 matched, 0 mismatched, 62 not attempted`), **the pinned
-`decompile` summary of all 9 fixtures and `moon check` of every generated package at zero warnings**,
-and **execution of the generated `control` and `fib` packages against values taken from the original
-module under Node**.
+every decoded mnemonic against wabt (`4,485 matched, 0 mismatched, 62 not attempted`), **the pinned
+`decompile` summary of all 10 good fixtures and `moon check` of every generated package at zero
+warnings**, **execution of the generated `control`, `fib` and `nested` packages against values taken
+from the original module under Node**, the full differential run, and `script/extended.sh` — checksum,
+decode, decompile and a zero-warning `moon check` for all **31 real-compiler modules**.
 
-Two of those deserve their own sentence because they are the ones that would otherwise let a broken
+Three of those deserve their own sentence because they are the ones that would otherwise let a broken
 emitter pass:
 
 - `moon check` at **zero warnings**, not merely zero errors: the naming and pruning rules of D7 and
   D9 exist only to satisfy this, and a regression shows up as a warning.
 - the smoke tests run the *generated* code and compare with the *original* module in Node
-  (`corpus/tools/oracle.js`). Both bugs found in the emitter — a `br_if` to the end of the body
-  emitted as an unconditional `return`, and a block entry value printed as `in0` with nothing binding
-  it — compile cleanly and pass every structural check. Only running the code found them.
-- the differential run (`script/verify.sh`) goes further: 354 planned calls on 7 fixtures, every one
+  (`corpus/tools/oracle.js`). Three bugs found in the emitter — a `br_if` to the end of the body
+  emitted as an unconditional `return`, a block entry value printed as `in0` with nothing binding
+  it, and a `br_table` payload read from a temporary nobody stored — compile cleanly or pass every
+  structural check. Only running the code found them.
+- the differential run (`script/verify.sh`) goes further: 384 planned calls on 8 fixtures, every one
   compared against the original, then `moon test` inside the generated package. Both counts are
   pinned, so a loss of coverage fails the gate even when everything that *was* compared passed.
 
