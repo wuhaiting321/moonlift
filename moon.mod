@@ -1,15 +1,14 @@
 // moonlift — WebAssembly (MVP) → compilable MoonBit source decompiler.
 //
-// Module name follows the `<owner>/<module>` form required by mooncakes.io.
-// If the project is later published under a different account, rename here and
-// run: grep -rl "moonlift/moonlift" . | xargs sed -i 's|moonlift/moonlift|<owner>/moonlift|g'
-name = "moonlift/moonlift"
+// Module name follows the `<owner>/<module>` form required by mooncakes.io and
+// matches the public repository below.
+name = "wuhaiting321/moonlift"
 
 version = "0.1.0"
 
 readme = "README.md"
 
-repository = ""
+repository = "https://github.com/wuhaiting321/moonlift"
 
 license = "Apache-2.0"
 

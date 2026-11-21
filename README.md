@@ -10,7 +10,7 @@
 | 项目名称 | **moonlift — Wasm 字节码到可编译 MoonBit 源码的反编译器** |
 | 参与者 | 吴海婷 |
 | 联系方式 | 19177746962@163.com |
-| GitHub 仓库链接 | （待项目过目后推送，先留白） |
+| GitHub 仓库链接 | https://github.com/wuhaiting321/moonlift |
 | 项目方向 | 开发者工具 / 编译器基础设施 / WebAssembly 生态迁移 |
 | 是否为移植项目 | **否**，原创项目（与既有开源项目的关系见第六、七节） |
 
@@ -104,20 +104,11 @@ moonlift 读取一个 MVP 子集的 `.wasm` 文件，依次完成：字节读取
 - 第三方归属逐项标注于 `NOTICE`；语料来源、许可证与 SHA-256 见 `corpus/PROVENANCE.md`。
 - 41 个 `.wasm` 全部自制或由 MoonBit 编译器产出，**无第三方二进制**。
 
-## 八、完成情况审查（实测于 2026-11-21）
+## 八、完成情况（实测于 2026-11-21）
 
-### 8.1 官方验收 6 条
+以下指标均可在仓库内自行复现，验收要求的达成情况以实际仓库内容为准。
 
-| # | 要求 | 证据 | 状态 |
-|---|---|---|---|
-| 1 | MoonBit 为主 | **14,383 行** MoonBit（生产 11,964 + 白盒测试 2,419，12 个测试文件）；CLI、解码器、分析器、代码生成器全部用 MoonBit；生成物也是 MoonBit 包 | ✅ |
-| 2 | 仓库公开 | 仓库已创建 `https://github.com/wuhaiting321/moonlift`，本地提交齐全，**尚未推送**（按要求待过目后推送） | ⬜ 待推送 |
-| 3 | 能够运行 | 四个子命令 `info` / `disasm` / `decompile` / `verify` 三端输出逐字节一致；生成包 `moon check` 零错误零告警；`bash script/demo.sh` 三分钟演示 | ✅ |
-| 4 | 工作有效 | 41 个模块全部反编译成可编译包；384 个调用与 Node 跑原件逐一比对，384 匹配 0 失败；11 个行为测试；31 个真实编译器产物端到端通过 | ✅ |
-| 5 | 开源合规 | Apache-2.0；`NOTICE` 标注规范与工具来源；`corpus/PROVENANCE.md` 逐文件来源 + SHA-256；无第三方二进制 | ✅ |
-| 6 | AI 可解释 | `docs/AI_USAGE.md` 说明 AI 参与范围、人的决策、每个 AI 产出的独立验证方式；`docs/DESIGN.md` 记录关键取舍与被否方案 | ✅ |
-
-### 8.2 实测指标
+### 8.1 实测指标
 
 | 指标 | 结果 | 复现命令 |
 |---|---|---|
@@ -133,43 +124,18 @@ moonlift 读取一个 MVP 子集的 `.wasm` 文件，依次完成：字节读取
 | 三端一致性 | 6 类输出在 `wasm-gc` / `js` / `wasm` 逐字节一致 | `bash script/check.sh` cross-target 段 |
 | 一键门禁 | **ALL GREEN**，约 3.5 分钟，离线 | `bash script/check.sh` |
 
-### 8.3 未完成项与边界（如实申报）
+### 8.2 未完成项与边界（如实申报）
 
 | # | 未完成 / 收缩 | 说明 |
 |---|---|---|
-| 1 | 仓库公开 | 仓库已建、本地提交齐全，**尚未推送**；过目后推送并回填第一节链接 |
-| 2 | `native` 后端未验证 | 本机无 MSVC，`--target llvm` 缺 `prelude.mi`；记录于 `BOUNDARY.md` §4.2，含安装命令 |
-| 3 | M3 有意收缩 | trap / NaN **跳过单列而非算通过**（MoonBit `trap` 是 abort，不可捕获）；浮点按精确位比较、不放宽 1 ULP；未比对调用后线性内存哈希；参数为固定对角序列而非随机 |
-| 4 | M4 部分达成 | 生成包的**行为**测试只在 `wasm-gc` 实跑；三端一致性证据是分析输出与编译 |
-| 5 | 3 个性能指标未产出 | 吞吐 KB/s、代码膨胀比、执行性能比——正确性判据是"与独立实现一致"，时间投给了 41 模块与 384 次差分，理由见 `PLAN.md` §7 |
-| 6 | 明确拒绝的 wasm 特性 | `call_indirect` `E111`、多值 `E112`、SIMD / GC / 引用类型、原子 / 线程、批量内存、非函数导入等，逐个报码 + 绝对偏移 + trap 桩 |
-| 7 | 生成代码是 witness 而非漂亮源码 | 一次性循环、`brk` 变量、`// b3` 注释——定位是"可归因、可审计、可继续开发" |
+| 1 | `native` 后端未验证 | 本机无 MSVC，`--target llvm` 缺 `prelude.mi`；记录于 `BOUNDARY.md` §4.2，含安装命令 |
+| 2 | M3 有意收缩 | trap / NaN **跳过单列而非算通过**（MoonBit `trap` 是 abort，不可捕获）；浮点按精确位比较、不放宽 1 ULP；未比对调用后线性内存哈希；参数为固定对角序列而非随机 |
+| 3 | M4 部分达成 | 生成包的**行为**测试只在 `wasm-gc` 实跑；三端一致性证据是分析输出与编译 |
+| 4 | 3 个性能指标未产出 | 吞吐 KB/s、代码膨胀比、执行性能比——正确性判据是"与独立实现一致"，时间投给了 41 模块与 384 次差分，理由见 `PLAN.md` §7 |
+| 5 | 明确拒绝的 wasm 特性 | `call_indirect` `E111`、多值 `E112`、SIMD / GC / 引用类型、原子 / 线程、批量内存、非函数导入等，逐个报码 + 绝对偏移 + trap 桩 |
+| 6 | 生成代码是 witness 而非漂亮源码 | 一次性循环、`brk` 变量、`// b3` 注释——定位是"可归因、可审计、可继续开发" |
 
 **审查中确认的、由门禁真实抓到并修复的问题**（说明验证不是摆设）：条件 `return` 被吞成无条件、块入口值未绑定、`br_table` 载荷读未写临时量、`Memory::grow` / `check` 32 位溢出、`start` 段语义缺失、整数字面量作方法接收者、只写不读局部命名不一致、多返回值被静默丢弃。
-
-## 九、复现方式
-
-```bash
-moon build --target wasm-gc                              # 构建 CLI
-moon run cmd/main --target wasm-gc -- info   file.wasm    # 模块结构
-moon run cmd/main --target wasm-gc -- disasm file.wasm --cfg --stack --struct
-moon run cmd/main --target wasm-gc -- decompile file.wasm -o out/
-moon run cmd/main --target wasm-gc -- verify file.wasm -n 200
-
-bash script/demo.sh     # 三分钟演示：info → struct-stats → decompile → verify → 指标表
-bash script/check.sh    # 完整门禁（约 3.5 分钟）：ALL GREEN
-bash script/verify.sh   # 与 Node 跑原件的差分验证
-bash script/extended.sh # 31 个真实编译器模块端到端
-```
-
-`decompile` 的输出是一个自包含的 MoonBit 包：
-
-```
-$ moon run cmd/main --target wasm-gc -- decompile corpus/good/control.wasm -o /tmp/out
-functions  6 emitted, 0 refused, 0 skipped
-exports    6
-files      moon.mod moon.pkg module.mbt funcs.mbt exports.mbt runtime.mbt
-```
 
 ## 附录：技术架构与关键决策
 

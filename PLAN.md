@@ -59,7 +59,7 @@ MoonBit 的三端策略有个结构性硬伤——wasm-gc 与 JS 后端**贴不�
 
 ```
 moonlift/
-├── moon.mod                 # name = "moonlift/moonlift", license Apache-2.0
+├── moon.mod                 # name = "wuhaiting321/moonlift", license Apache-2.0
 ├── moon.pkg                 # 根包（库入口）
 ├── README.mbt.md           #  literate README（官方脚手架同款）
 ├── LICENSE                 # Apache-2.0
