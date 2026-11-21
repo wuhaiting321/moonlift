@@ -154,7 +154,7 @@ moonlift 读取一个 MVP 子集的 `.wasm` 文件，依次完成：字节读取
 9. **`start` → `moonlift_init()`**：MoonBit 包没有实例化步骤，由宿主显式调用。
 10. **浮点与 trap 是"观测"不是"值"**：trap / NaN 跳过并单列，绝不冒充通过。
 
-更多文档：[BOUNDARY.md](BOUNDARY.md)（支持矩阵、13 条语义偏差、20 条已知限制）、[docs/DESIGN.md](docs/DESIGN.md)、[docs/ACCEPTANCE.md](docs/ACCEPTANCE.md)、[docs/AI_USAGE.md](docs/AI_USAGE.md)、[corpus/PROVENANCE.md](corpus/PROVENANCE.md)。
+更多文档：[BOUNDARY.md](BOUNDARY.md)（支持矩阵、13 条语义偏差、19 条已知限制）、[docs/DESIGN.md](docs/DESIGN.md)、[docs/ACCEPTANCE.md](docs/ACCEPTANCE.md)、[docs/AI_USAGE.md](docs/AI_USAGE.md)、[corpus/PROVENANCE.md](corpus/PROVENANCE.md)。
 
 ## License
 

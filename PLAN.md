@@ -224,7 +224,7 @@ pub(open) trait Host {
 | **S7** | MoonBit 代码生成 + 支持库 | `core/emit.mbt`（1,901 行：命名、表达式打印、死尾裁剪）+ `runtime/runtime.mbt`（927 行：Memory、除法/取余、移位、旋转、trunc、min/max、无符号比较、位级浮点 helper）+ `decompile` 写出 6 个文件 | **已完成**：150 测试（新增 17）；**9 个夹具全部生成可编译包，`moon check` 零错误零告警**；真实产物写出 79 个函数定义（72 主体 + 7 个 trap 桩）；`control` 6/6、`fib` 3/3 用 Node 跑原件取期望值后逐值对齐，wasm-gc 与 js 双端通过 |
 | **S8** | 差分验证 harness | `core/verify.mbt`（调用计划：对角序列 + 4 组锚定行）+ `corpus/tools/oracle.js --json`（参考实现，浮点按位比较）+ `script/verify.sh`（编排 + 生成测试 + 跑 `moon test`） | **已完成（当时值）**：**354 个调用，354 个与原件一致，0 失败**，覆盖 7 个不需要 host 的夹具；164 个调用因原件 trap/NaN 被跳过并单列；`imports` 与 `moonbit_fib` 需要 host，报告如实写明并排除。**S9 加入 `nested.wasm` 后为 384/384/0、8 个夹具**，见 §13 |
 | **S9** | 语料建设 | 三层：① 手写 `.wat` 夹具经 npm wabt 汇编（覆盖边角指令）② `corpus/tools/gen_corpus.py` 用 `moon build --target wasm` 批量产出真实编译器模块 ③ 公开 prebuilt wasm 未采用（无必要，且会带来第三方许可证） | **已完成**：**41 个模块入库**（10 个 `corpus/good/` + 31 个 `corpus/extended/`），每个都有 SHA-256 与来源说明；新增 `nested.wat`（`br_table` 在 `loop` 里且跨边携带值）；`script/extended.sh` 对 31 个真实产物逐个做校验和→解码→反编译→零告警 `moon check`。这一层找出并修复了 3 个真实 bug：整数字面量作方法接收者、只写不读局部的命名不一致、多返回值被静默丢弃 |
-| **S10** | 边界与偏差清单 | `BOUNDARY.md`：支持矩阵、错误码、语义偏差逐条、未完成项 | **已完成**：13 条语义偏差（D1–D13，每条含偏差/原因/影响面）、20 条已知限制、冻结的 17 个错误码、§5 复现清单；明确写出 M3/M4 的有意收缩与仓库未公开 |
+| **S10** | 边界与偏差清单 | `BOUNDARY.md`：支持矩阵、错误码、语义偏差逐条、未完成项 | **已完成**：13 条语义偏差（D1–D13，每条含偏差/原因/影响面）、19 条已知限制、冻结的 17 个错误码、§5 复现清单；明确写出 M3/M4 的有意收缩 |
 | **S11** | 文档 + 指标 + 申报材料 | README、DESIGN、ACCEPTANCE 对照表、指标表、一页申报书 | **已完成**：`README.md` 指标表 + 状态；`docs/DESIGN.md`、`docs/ACCEPTANCE.md`、`docs/AI_USAGE.md`；申报书并入 `README.md` 顶部（中文一页，可直接贴飞书）；`script/demo.sh` 三分钟演示；`bash script/check.sh` → **ALL GREEN** |
 
 > 顺序理由：S1–S3 是纯机械劳动但必须先对；S4–S6 是算法难点，放在有测试保护之后；S7 之后每一步都要 `moon check` 生成物，形成闭环。
@@ -308,7 +308,7 @@ pub(open) trait Host {
 > ② trap / NaN **跳过并单列**，不算通过 —— MoonBit 的 `trap` 是 abort 而非可捕获错误，生成测试无法观测自身 trap；
 > ③ 浮点**精确按位比较**，不放宽到 1 ULP（按位比较的意义就是不许打印往返改掉 NaN 载荷或零的符号）；
 > ④ 未比对调用后线性内存哈希；
-> ⑤ 三个性能指标未产出：本项目的正确性判据是「与独立实现一致」，吞吐/体积/速度比与验收无关，把时间花在了 41 个模块的编译与 384 次差分上。最终申报书改用 `README.md`「Metrics」与 `README.md（申报书）` 里的 **11 项以正确性为核心的指标**，每项都有复现命令。详见 `docs/ACCEPTANCE.md` §3 与 `BOUNDARY.md` §4.20。
+> ⑤ 三个性能指标未产出：本项目的正确性判据是「与独立实现一致」，吞吐/体积/速度比与验收无关，把时间花在了 41 个模块的编译与 384 次差分上。最终申报书改用 `README.md`「Metrics」与 `README.md（申报书）` 里的 **11 项以正确性为核心的指标**，每项都有复现命令。详见 `docs/ACCEPTANCE.md` §3 与 `BOUNDARY.md` §4.19。
 
 ---
 
@@ -348,7 +348,7 @@ pub(open) trait Host {
 4. **边界**（MVP 子集 + **13 条**语义偏差 D1–D13 + **20 条**已知限制 + M3/M4 的有意收缩）✅
 5. **验证数据**（**11 项**以正确性为核心的指标表，每项附复现命令；三个性能指标未产出并说明原因）✅
 6. **开源合规 + AI 使用说明**（Apache-2.0；`docs/AI_USAGE.md`；格式参考 WebAssembly spec，结构化策略为自研，逐项在 `NOTICE` 标注）✅
-7. **新增：提交前唯一待办 —— 仓库公开**（按你的要求全程未推送）✅
+7. **仓库公开**：已推送至 https://github.com/wuhaiting321/moonlift（PUBLIC，默认分支 master）✅
 
 ---
 
@@ -368,7 +368,7 @@ pub(open) trait Host {
 
 ## 12. 需要你拍板的 3 件事（全部已定）
 
-1. **边界策略** → **已定：接受「MVP 子集 + 明确报错」**。落地为 17 个冻结错误码、13 条语义偏差、20 条已知限制；「范围变化和未完成事项交代清楚」写进 `BOUNDARY.md` 与申报书。
+1. **边界策略** → **已定：接受「MVP 子集 + 明确报错」**。落地为 17 个冻结错误码、13 条语义偏差、19 条已知限制；「范围变化和未完成事项交代清楚」写进 `BOUNDARY.md` 与申报书。
 2. **native 后端** → **已定：不装 MSVC**，验证矩阵为 `wasm` / `wasm-gc` / `js` 三端；native 在 `BOUNDARY.md` §4.2 列为环境依赖并给出安装命令。本机实测 `--target llvm` 缺 `prelude.mi`。
 3. **申报书** → **已定并已产出**：`README.md（申报书）`，中文一页、含 11 项指标表，可直接贴飞书。
 

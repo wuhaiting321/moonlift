@@ -9,7 +9,7 @@
 | # | 官方要求 | 本仓库的证据 | 复现命令 | 状态 |
 |---|---|---|---|---|
 | 1 | **MoonBit 为主** | 14,383 行 MoonBit 源码（`core/` 12,699 + `runtime/` 1,218 + `cmd/` 466），12 个 `_wbtest.mbt` 共 152 个白盒用例；CLI、解码器、分析器、代码生成器、调用计划全部用 MoonBit 写；生成物也是 MoonBit 包 | `find core runtime cmd -name '*.mbt' \| xargs wc -l`；`moon test --target wasm-gc` | ✅ |
-| 2 | **仓库公开** | 仓库已创建（`https://github.com/wuhaiting321/moonlift`），本地提交齐全、`git remote -v` 为空、**尚未推送** | `git log --oneline`；`git remote -v` | ⬜ **唯一未勾选项**，见 §4 |
+| 2 | **仓库公开** | 已公开：`https://github.com/wuhaiting321/moonlift`（PUBLIC，默认分支 `master`，158 个文件）；16 个提交的作者统一为 `wuhaiting321 <19177746962@163.com>` | `gh repo view wuhaiting321/moonlift --json visibility,defaultBranchRef` | ✅ |
 | 3 | **能够运行** | `info` / `disasm` / `decompile` / `verify` 四个子命令在 `wasm-gc`、`js`、`wasm` 三端输出逐字节一致；生成包 `moon check` 零错误零告警 | `bash script/check.sh`（cross-target 段）；`bash script/demo.sh` | ✅ |
 | 4 | **工作有效** | 41 个模块全部反编译成可编译包；384 个调用与 Node 跑原件的值逐一比对，384 匹配、0 失败；11 个行为测试；31 个真实编译器产物端到端通过 | `bash script/verify.sh`；`bash script/extended.sh` | ✅ |
 | 5 | **开源合规** | Apache-2.0（`LICENSE`）；`NOTICE` 标注格式与算法参考来源；`corpus/PROVENANCE.md` 说明 41 个 `.wasm` 的来源、许可证与 SHA-256（`corpus/good/SHA256SUMS`、`corpus/extended/SHA256SUMS`）；所有夹具均为自制或 MoonBit 编译器产出，无第三方二进制 | `cat NOTICE`；`cat corpus/PROVENANCE.md` | ✅ |
@@ -30,41 +30,36 @@
 |---|---|---|---|
 | **M1** | `info` 对语料 100% 不 panic；非法输入 100% 返回 `E0xx` + 字节偏移 | **60/60**（41 个良构 + 19 个畸形）全部按预期处理；畸形样本按文件名报出错误码与偏移 | ✅ 达成 |
 | **M2** | ≥95% 模块生成物 `moon check` 零报错 | **41/41 = 100%**，且**零告警**（10 个自制夹具 + 31 个编译器产物） | ✅ 超出（把告警也纳入判据） |
-| **M3** | 导出函数随机输入差分，case 通过率 ≥99%，trap 也算可比较观测值 | **384 个可比较调用 384 匹配、0 失败**；另有 164 个调用因原件 trap / NaN **被跳过并单列** | ⚠️ **有意收缩**：见 BOUNDARY §4.20。MoonBit 的 `trap` 是 abort 不是可捕获错误，无法在生成测试里观测；浮点按精确位比较、不放宽到 1 ULP；未比对调用后的线性内存哈希。这三项都写进边界而不是藏在"100% 通过"里 |
+| **M3** | 导出函数随机输入差分，case 通过率 ≥99%，trap 也算可比较观测值 | **384 个可比较调用 384 匹配、0 失败**；另有 164 个调用因原件 trap / NaN **被跳过并单列** | ⚠️ **有意收缩**：见 BOUNDARY §4.19。MoonBit 的 `trap` 是 abort 不是可捕获错误，无法在生成测试里观测；浮点按精确位比较、不放宽到 1 ULP；未比对调用后的线性内存哈希。这三项都写进边界而不是藏在"100% 通过"里 |
 | **M4** | 生成代码在 `wasm` / `wasm-gc` / `js` 三端实跑，结果逐位一致；某端编译不过要记录跳过原因 | `info`、`--ops`、`--cfg`、`--stack`、`--struct`、`calls.tsv` 在**三端逐字节一致**；项目自身单测在 `wasm-gc` 与 `js` 双端通过；生成包的 `moon check` 在三端通过，行为测试在 `wasm-gc` 实跑 | ⚠️ **部分达成**：三端一致性的证据是 CLI 分析输出与编译，生成包的**行为**测试只在 `wasm-gc` 跑（js/wasm 未跑行为测试）。native 后端因本机缺 MSVC 未验证，已在 BOUNDARY §4.2 记录原因 |
 | **M5** | `bash script/demo.sh` 从零跑完 info→decompile→verify 并打印指标表 | 已实现：`bash script/demo.sh` 五步演示 + 实时测量指标表；完整门禁是 `bash script/check.sh` | ✅ 达成 |
 
 M3 / M4 的两处收缩是**明确申报的边界**，不是遗漏。`docs/DESIGN.md` §5 与 `BOUNDARY.md` §4 说明了原因和影响面。
 
-## 4. 提交前唯一待办：仓库公开
+## 4. 仓库公开（已完成）
 
-按你的要求，项目全程**只在本地提交，没有配置 remote、没有推送**。当前提交：
+项目已推送到 `https://github.com/wuhaiting321/moonlift`（PUBLIC，默认分支 `master`）。
+
+推送前做了三件事，记录在此以便复核：
+
+1. `moon.mod` 的 `name` 改为 `wuhaiting321/moonlift`，`repository` 指向仓库 URL；`cmd/main/moon.pkg` 的包引用同步改名；
+2. git 身份由占位值 `moonlift-dev` 改为 `wuhaiting321 <19177746962@163.com>`，**全部 16 个提交的作者与提交者一并改写**，公开后的历史里没有占位身份；
+3. 改名后重跑 `bash script/check.sh` → `ALL GREEN`（4,485/4,485 对拍、395/395 块、384/384 差分，与改名前的数字一致），确认模块名变更没有引入回归。
+
+`git remote -v` 现在为：
 
 ```
-21d0e8b  S9: 41-module corpus
-e984b6a  S10: finalise BOUNDARY
-...      S11: docs, acceptance, submission form
-5d23e9d  S8: differential verification
-1a64953  S7: MoonBit code generation
+origin  https://github.com/wuhaiting321/moonlift.git (fetch)
+origin  https://github.com/wuhaiting321/moonlift.git (push)
 ```
-
-仓库**已创建**：`https://github.com/wuhaiting321/moonlift`（空仓库，未初始化 README）。按你的要求**先不推送**，README 申报书的"GitHub 仓库"字段留白。等你过目确认后，再执行：
-
-1. 把 `moon.mod` 的 `name = "moonlift/moonlift"` 改成 `<你的账号>/moonlift`，全局替换 `moonlift/moonlift`；
-2. 把 git 身份从占位值 `moonlift-dev <moonlift-dev@users.noreply.github.com>` 改成真实身份；
-3. `git remote add origin https://github.com/wuhaiting321/moonlift`；
-4. `git push -u origin main`；
-5. 把仓库链接回填到 README 申报书"GitHub 仓库"栏。
-
-**注意**：第 1 步会改变模块名，`script/check.sh` 里没有钉住模块名字符串，但改完仍应重跑一次门禁确认。
 
 ## 5. 三分钟复现路径（评委视角）
 
 ```bash
-git clone <repo> && cd moonlift
+git clone https://github.com/wuhaiting321/moonlift && cd moonlift
 bash script/demo.sh        # info → struct-stats → decompile → moon check → verify → 指标表
 bash script/check.sh       # 完整门禁，ALL GREEN
-cat BOUNDARY.md            # 支持矩阵 / 13 条语义偏差 / 20 条已知限制
+cat BOUNDARY.md            # 支持矩阵 / 13 条语义偏差 / 19 条已知限制
 cat docs/ACCEPTANCE.md     # 本表
 cat README.md             # 项目申报书（见 README 顶部）
 ```
