@@ -49,5 +49,12 @@ jobs:
           moon version --all
           node --version
 
+      # A fresh runner has no package-registry index, so `moon check` cannot
+      # resolve `moonbitlang/x` and every later step fails with "module was not
+      # found in the registry". One `moon update` fetches the index; the first
+      # `moon check` then downloads the pinned dependency into .mooncakes.
+      - name: Update package registry
+        run: moon update
+
       - name: Full gate
         run: bash script/check.sh
