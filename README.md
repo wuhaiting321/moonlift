@@ -8,24 +8,26 @@ MoonBit package that `moon build` accepts and that behaves like the original mod
 taken from the **original** module running under Node's `WebAssembly`, and the generated package has
 to reproduce them.
 
-> **Status: S8 (differential verification).** The pipeline runs end to end: bytes → sections →
+> **Status: complete (S0–S11).** The pipeline runs end to end: bytes → sections →
 > instructions → basic blocks → typed expressions → nested `while` / `if` / `match` → **MoonBit
-> source that compiles**. 150 white-box tests, 9 fixtures decoded, 19 malformed fixtures rejected
-> with a stable error code and a byte offset.
+> source that compiles and behaves like the original**. 152 white-box tests, 41 `.wasm` modules in
+> the corpus, 19 malformed fixtures rejected with a stable error code and a byte offset.
 >
 > `moonlift info` describes a module; `disasm` decodes every body to `.wat`; `--cfg` prints blocks,
 > dominators, natural loops and a reducibility verdict; `--stack` prints the recovered per-block
 > expressions **and type-checks them**; `--struct` lowers the graph to nested `while` / `if` /
-> `match` with no `br` left in it; `decompile` writes a MoonBit package. On the real 20 KB artifact,
-> 72 of 79 bodies are structured — **395 of 395 reachable blocks emitted exactly once** — 6 are
-> refused by name and 1 is skipped, with **nothing rejected as malformed**. Every one of the 9
-> fixtures decompiles into a package that `moon check` accepts **with zero errors and zero
-> warnings**, and two of them are executed and compared against the original module in Node.
-> The decoder is cross-checked against wabt, an independent implementation: **4,423 of 4,423
-> reachable instructions agree, 0 mismatches**, with 62 instructions in one SIMD helper deliberately
-> not attempted. `verify` plans the calls, `script/verify.sh` runs them against the original in Node and
-> compares: **354 calls, 354 matched, 0 failed** across the 7 fixtures that do not need a host — see
-> [Roadmap](#roadmap) and [BOUNDARY.md](BOUNDARY.md).
+> `match` with no `br` left in it; `decompile` writes a MoonBit package; `verify` plans a
+> differential run. On the real 20 KB artifact, 72 of 79 bodies are structured — **395 of 395
+> reachable blocks emitted exactly once** — 6 are refused by name and 1 is skipped, with **nothing
+> rejected as malformed**. All 10 good fixtures and all 31 real-compiler modules decompile into
+> packages that `moon check` accepts **with zero errors and zero warnings**. The decoder is
+> cross-checked against wabt, an independent implementation: **4,485 of 4,485 reachable
+> instructions agree, 0 mismatches**, with 62 instructions in one SIMD helper deliberately not
+> attempted. `script/verify.sh` compares **384 calls, 384 matched, 0 failed** against the original
+> modules running in Node, and three generated packages are executed against values the originals
+> produce. Everything is reproducible with one command: `bash script/check.sh` → `ALL GREEN`.
+> See [Metrics](#metrics), [Roadmap](#roadmap), [BOUNDARY.md](BOUNDARY.md) and the
+> [acceptance table](docs/ACCEPTANCE.md).
 
 ---
 
@@ -55,6 +57,11 @@ moon run cmd/main --target wasm-gc -- info   path/to/module.wasm
 moon run cmd/main --target wasm-gc -- disasm path/to/module.wasm [--ops|--stats|--cfg|--stack|--struct]
 moon run cmd/main --target wasm-gc -- decompile path/to/module.wasm -o out/
 moon run cmd/main --target wasm-gc -- verify path/to/module.wasm -n 200
+
+bash script/demo.sh        # 3-minute end-to-end demo + measured metrics
+bash script/check.sh       # full gate (~3.5 min): ALL GREEN
+bash script/verify.sh      # differential run against the originals in Node
+bash script/extended.sh    # 31 real-compiler modules, end to end
 ```
 
 `info` on a real compiler artifact:
@@ -336,24 +343,32 @@ emitter did — leaves every caller uncompilable: 7 errors on the real artifact,
 identifier `f47` is unbound", one per refused function that something still calls. A stub keeps the
 module buildable and stops loudly at exactly the call that would otherwise return a wrong value.
 
-**Compiling is not behaving.** `script/check.sh` decompiles all 9 fixtures, runs `moon check` in
-each, and requires **0 errors and 0 warnings**; then it copies the test files from
-`script/smoke/` into the generated packages for `control.wasm` and `fib.wasm` and runs them. The
-expected values in those files came from the *original* module under Node
-(`corpus/tools/oracle.js`), so the comparison is between two implementations.
+**Compiling is not behaving.** `script/check.sh` decompiles all 10 good fixtures, runs `moon check`
+in each, and requires **0 errors and 0 warnings**; then it copies the test files from
+`script/smoke/` into the generated packages for `control.wasm`, `fib.wasm` and `nested.wasm` and
+runs them. A second step (`script/extended.sh`) does the same — checksum, decode, decompile, zero-
+warning `moon check` — for 31 modules produced by MoonBit's own compiler. The expected values in
+the smoke files came from the *original* module under Node (`corpus/tools/oracle.js`), so the
+comparison is between two implementations.
 
-Two bugs were found this way and are now pinned by tests:
+Three bugs were found this way and are now pinned by tests:
 
 - a `br_if` whose target is the end of the body was emitted as an unconditional `return`, which
   turns "return if the buffer is empty" into "return" — the difference between a loop and a body
   that quits on its first iteration;
 - a block's entry value was printed as `in0` with nothing binding it. Every block was still emitted
-  exactly once, so the coverage invariant passed while the code was unbuildable.
+  exactly once, so the coverage invariant passed while the code was unbuildable;
+- a `br_table` with a value on the stack read that value from a temporary nobody had written —
+  `nested.wasm` is the fixture, and all three of its dispatch arms are compared against the
+  original. The fix is documented as D12 in `BOUNDARY.md`.
 
-A third class only showed up as compiler output, not as wrong values: unused parameters, locals that
-nothing reads, and a `mut` nothing stores to. The emitter now names them `_p0` / `_l3` / `_t2` and
-declares `mut` only where something is written, which is why the 9 generated packages are warning-
-free rather than merely error-free.
+A fourth class only showed up as compiler output, not as wrong values: unused parameters, locals
+that nothing reads, a `mut` nothing stores to, and an integer literal used as a method receiver
+(`63.to_int64()` is lexed as a float). The emitter now names the first three `_p0` / `_l3` / `_t2`,
+declares `mut` only where something is written, and parenthesises literal receivers — which is why
+all 41 generated packages are warning-free rather than merely error-free. A fifth was a real
+semantic omission: a function returning two values had its second result silently dropped; it is
+now refused with `E112` and emitted as a trapping stub.
 
 ## verify
 
@@ -367,11 +382,12 @@ globals               17      17       0  -
 imports                3       -       -  the original needs a host: ...
 memory                49      49      24  -
 moonbit_fib            0       -       -  no exported function to call
+nested                30      30       0  -
 stack                 92      92       6  -
 table                 14      14       0  -
 
-TOTAL                354     354     164
-calls compared: 354, matched: 354, skipped (trap/NaN): 164, failed: 0
+TOTAL                384     384     164
+calls compared: 384, matched: 384, skipped (trap/NaN): 164, failed: 0
 verify: every compared call matched the original
 ```
 
@@ -385,7 +401,7 @@ against itself.
 decimal float literal has to survive a printer on both sides and the things that must not change are
 the sign of a zero and a NaN payload. A call whose original traps, or returns a NaN, is *skipped* and
 counted in its own column: a trap has no value to compare, and a NaN produced by arithmetic may
-legitimately differ in payload between V8 and a MoonBit runtime. 164 of 518 calls are in that
+legitimately differ in payload between V8 and a MoonBit runtime. 164 of 548 calls are in that
 bucket, almost all of them `arith`'s `$i32_bin`, which runs every binary operator in sequence and
 therefore divides by zero for any argument pair containing one.
 
@@ -408,6 +424,32 @@ added the access width to the address — a load at `0x7FFFFFFE` would have wrap
 of trapping; that one was found by reading the neighbouring function while fixing the first, and is
 fixed the same way, in 64 bits.
 
+## Metrics
+
+Every number below is printed by a command in `script/` or by the one-liner in the last column.
+`bash script/check.sh` re-checks all of them and exits non-zero if any drifts.
+
+| Metric | Value | Reproduce |
+|---|---|---|
+| MoonBit source lines (project code) | **14,383** | `find core runtime cmd -name '*.mbt' \| xargs wc -l` |
+| White-box tests | **152**, 152 pass on `wasm-gc` and `js` | `moon test --target wasm-gc` |
+| Corpus modules | **41** (10 good + 31 real compiler output) | `ls corpus/good/*.wasm corpus/extended/*.wasm \| wc -l` |
+| Malformed fixtures rejected with code + byte offset | **19 / 19** | `bash script/check.sh` → "19 malformed fixtures rejected" |
+| Decoder vs wabt (independent implementation) | **4,485 matched, 0 mismatched**, 62 SIMD not attempted | `node corpus/tools/verify_decode.js` |
+| Real 20 KB artifact | 79 functions: **72 structured**, 6 refused, 1 skipped, 0 malformed | `moon run cmd/main -- disasm corpus/good/moonbit_fib.wasm --struct-stats` |
+| Structuring coverage | **395 / 395** reachable blocks, `nodes 1115`, `max depth 7` | same command |
+| Generated packages compiling cleanly | **41 / 41**, zero errors **and zero warnings** | `bash script/check.sh`, `bash script/extended.sh` |
+| Function definitions on the real artifact | **79** (72 bodies + 7 trapping stubs) | `grep -c '^pub fn f' /tmp/moonlift_gen/moonbit_fib/funcs.mbt` |
+| Behavioural smoke tests | **11** (control 6, fib 3, nested 2) | `bash script/check.sh` → smoke step |
+| Differential calls vs the original in Node | **384 compared, 384 matched, 0 failed**, 164 skipped (trap/NaN) | `bash script/verify.sh` |
+| Real-compiler modules end-to-end | **31 / 31**, 1,538 function bodies emitted | `bash script/extended.sh` |
+| Cross-target identity (`wasm-gc` / `js` / `wasm`) | `info`, `--ops`, `--cfg`, `--stack`, `--struct`, `calls.tsv` all byte-identical | `bash script/check.sh` → cross-target steps |
+| Gate | `ALL GREEN`, ~3.5 min, no network, no C toolchain | `bash script/check.sh` |
+
+Two deliberately excluded rows: `imports.wasm` and `moonbit_fib.wasm` need a host, so Node cannot
+instantiate the original; and `native` is unavailable on this machine (no MSVC). Both are written
+down in `BOUNDARY.md` §4 rather than quietly omitted.
+
 ## Repository layout
 
 | Path | Role | Stage |
@@ -423,25 +465,31 @@ fixed the same way, in 64 bits.
 | `core/verify.mbt` | the call plan: which exports to compare, with which arguments | done |
 | `runtime/` | support library copied into every generated package | done |
 | `cmd/main/` | CLI shell (no logic) | S0, S2 |
-| `corpus/` | fixtures, malformed samples, provenance, regeneration and wabt cross-check | done |
-| `script/` | one-command check / demo scripts | S0 |
+| `corpus/good/` | 10 pinned fixtures: 9 hand-written `.wat` + one 20 KB real compiler artifact, with SHA-256 | done |
+| `corpus/extended/` | 31 real-compiler modules, sources in `corpus/tools/sources/`, SHA-256 in `SHA256SUMS` | done |
+| `corpus/bad/`, `corpus/badcode/` | 19 malformed samples, each named after the error it must produce | done |
+| `corpus/tools/` | `.wat` assembler, wabt cross-check, Node oracle, corpus generator | done |
+| `script/check.sh` | one-command gate (format, 3 targets, tests, corpus, decompile, verify, extended) | done |
+| `script/verify.sh` | differential harness: MoonBit plan → Node answers → generated tests | done |
+| `script/extended.sh` | 31 real modules: checksum → decode → decompile → zero-warning `moon check` | done |
+| `docs/` | [DESIGN](docs/DESIGN.md), [ACCEPTANCE](docs/ACCEPTANCE.md), [AI_USAGE](docs/AI_USAGE.md), [申报书](docs/申报书.md) | done |
 
 ## Roadmap
 
-| Stage | Deliverable |
-|---|---|
-| S0 | scaffold, diagnostics, CLI skeleton, CI script |
-| S1 | byte reader + LEB128 with offset-anchored errors |
-| S2 | section decoding, `moonlift info` |
-| S3 | 172 MVP instructions, `.wat`-style dump, wabt cross-check |
-| S4 | CFG + dominators + natural loops + reducibility |
-| S5 | typed stack simulation, type checking, reordering hazards |
-| S6 | structuring: construct-tree walker, one-shot blocks, multi-level escapes |
-| S7 | MoonBit emitter, first end-to-end decompile |
-| S8 | differential verification harness ← **you are here** |
-| S9 | corpus expansion: more real compiler output |
-| S10 | `BOUNDARY.md`: support matrix, 8+ semantic deviations, known gaps |
-| S11 | docs, metrics table, submission material |
+| Stage | Deliverable | Status |
+|---|---|---|
+| S0 | scaffold, diagnostics, CLI skeleton, CI script | done |
+| S1 | byte reader + LEB128 with offset-anchored errors | done |
+| S2 | section decoding, `moonlift info` | done |
+| S3 | 172 MVP instructions, `.wat`-style dump, wabt cross-check | done |
+| S4 | CFG + dominators + natural loops + reducibility | done |
+| S5 | typed stack simulation, type checking, reordering hazards | done |
+| S6 | structuring: construct-tree walker, one-shot blocks, multi-level escapes | done |
+| S7 | MoonBit emitter, first end-to-end decompile | done |
+| S8 | differential verification harness | done: 384/384 |
+| S9 | corpus expansion: 41 modules, 31 from the real compiler | done |
+| S10 | `BOUNDARY.md`: support matrix, 13 semantic deviations, 19 known gaps | done |
+| S11 | README, DESIGN, ACCEPTANCE table, metrics, one-page submission form | done |
 
 ## Verify
 
@@ -449,8 +497,8 @@ fixed the same way, in 64 bits.
 bash script/check.sh
 ```
 
-Runs format check, `moon check` on `wasm-gc`/`js`/`wasm`, 151 unit tests on two targets, CLI smoke
-tests, every corpus fixture through the real binary, the code-layer malformed samples (each must
+Runs format check, `moon check` on `wasm-gc`/`js`/`wasm`, 152 unit tests on two targets, CLI smoke
+tests, all 10 good fixtures through the real binary, the code-layer malformed samples (each must
 report the error code written in its filename — including the one that decodes but does not
 type-check), a cross-backend comparison requiring `info`, `disasm --ops`, `disasm --cfg`,
 `disasm --stack` and `disasm --struct` output to be byte-identical on all three targets, the
@@ -459,13 +507,20 @@ pinned to its exact successor line), the pinned recovery counts of the real arti
 hazards on the fixture that isolates them, the structurer on every fixture (no raw branch statement
 may survive, and the pinned `structured` / `nodes` / `blocks emitted` / `guards` / `max depth` counts
 may not drift), the decoder against wabt, **every fixture decompiled and the generated package
-compiled with `moon check` at zero warnings**, and **the generated packages for `control` and `fib`
-executed against the values the originals produce under Node**, and the full differential run
-(**354 calls compared, 354 matched**).
+compiled with `moon check` at zero warnings**, **the generated packages for `control`, `fib` and
+`nested` executed against the values the originals produce under Node**, the full differential run
+(**384 calls compared, 384 matched**), and **31 real-compiler modules through checksum → decode →
+decompile → zero-warning `moon check`**.
 
-The last two are the ones that matter. A code generator that emits something a compiler rejects is
-obviously broken, but one that emits code that compiles and computes the wrong answer looks exactly
-like a working decompiler until someone runs it.
+For a short end-to-end demo that prints the metric table instead of the full gate:
+
+```bash
+bash script/demo.sh
+```
+
+The last two checks are the ones that matter. A code generator that emits something a compiler rejects
+is obviously broken, but one that emits code that compiles and computes the wrong answer looks
+exactly like a working decompiler until someone runs it.
 
 ## License
 

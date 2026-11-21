@@ -9,15 +9,18 @@ Third-party material referenced by this project
 
 1. WebAssembly Core Specification 1.0 / 2.0 (W3C Recommendation)
    Used as the normative definition of the binary format, instruction
-   semantics and value types implemented by decode/, analyze/ and emit/.
-   Specification text is not copied; only its behaviour is implemented.
+   semantics and value types implemented by core/ (reader, section,
+   decode_instr, stack, struct, emit). Specification text is not copied;
+   only its behaviour is implemented.
    https://www.w3.org/TR/wasm-core-1/
 
 2. "Relooper: Refactoring Conditional Branching into Loops"
-   Alon Zakai, Technical Report, 2011 (the structuring algorithm behind
-   Emscripten's relooper). The control-flow structuring in reloop/ is an
-   independent implementation of the published algorithm; no source code
-   from Emscripten, Binaryen or LLVM is copied.
+   Alon Zakai, Technical Report, 2011. **Evaluated and deliberately NOT
+   used**: moonlift walks the construct tree already present in wasm
+   (`block` / `loop` / `if` with their `end`s) instead of re-deriving
+   nesting from a flat CFG. The algorithm is cited only to document the
+   rejected alternative (see docs/DESIGN.md section 3.2). No source code
+   from Emscripten, Binaryen or LLVM is used or copied.
    https://github.com/emscripten-core/emscripten/blob/main/docs/paper.pdf
 
 3. wabt (WebAssembly Binary Toolkit)

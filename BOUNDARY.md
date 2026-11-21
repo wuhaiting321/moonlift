@@ -456,6 +456,17 @@ packages to compile at zero warnings.
 19. **The repository is not yet public.** All work is committed locally; no git remote is configured
     and nothing has been pushed. Publishing is a separate, explicit step — see
     `docs/申报书.md` for the one item that has to be ticked before submission.
+20. **Traps and NaNs are skipped, not compared.** The original plan (`PLAN.md` §7) counted a trap
+    as a comparable observation and allowed ≤1 ULP for floats. The shipped harness does neither:
+    `trap(...)` in MoonBit is an abort, not a raisable error — trying to `catch` it produces warning
+    `unused_try` — so a generated test cannot observe its own trap without killing the test process.
+    Calls where the original traps or returns a NaN are therefore recorded as **skipped**, in their
+    own column, and never counted as passes: 384 compared / 384 matched / 164 skipped. Floats are
+    compared as exact signed bit patterns, with no ULP tolerance, because the point of comparing
+    bits is precisely that a printer round trip must not change a NaN payload or the sign of a zero.
+    Linear-memory hashes after a call are also not compared; the differential claim is about
+    exported return values. These are three deliberate reductions of the original M3 contract and
+    are listed here rather than hidden behind a single "100% pass" number.
 
 ## 5. Reproduce every claim
 
