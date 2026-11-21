@@ -9,7 +9,7 @@
 | # | 官方要求 | 本仓库的证据 | 复现命令 | 状态 |
 |---|---|---|---|---|
 | 1 | **MoonBit 为主** | 14,383 行 MoonBit 源码（`core/` 12,699 + `runtime/` 1,218 + `cmd/` 466），12 个 `_wbtest.mbt` 共 152 个白盒用例；CLI、解码器、分析器、代码生成器、调用计划全部用 MoonBit 写；生成物也是 MoonBit 包 | `find core runtime cmd -name '*.mbt' \| xargs wc -l`；`moon test --target wasm-gc` | ✅ |
-| 2 | **仓库公开** | 代码已完成、本地 4 个阶段提交齐全、`git remote -v` 为空、**尚未推送** | `git log --oneline`；`git remote -v` | ⬜ **唯一未勾选项**，见 §4 |
+| 2 | **仓库公开** | 仓库已创建（`https://github.com/wuhaiting321/moonlift`），本地提交齐全、`git remote -v` 为空、**尚未推送** | `git log --oneline`；`git remote -v` | ⬜ **唯一未勾选项**，见 §4 |
 | 3 | **能够运行** | `info` / `disasm` / `decompile` / `verify` 四个子命令在 `wasm-gc`、`js`、`wasm` 三端输出逐字节一致；生成包 `moon check` 零错误零告警 | `bash script/check.sh`（cross-target 段）；`bash script/demo.sh` | ✅ |
 | 4 | **工作有效** | 41 个模块全部反编译成可编译包；384 个调用与 Node 跑原件的值逐一比对，384 匹配、0 失败；11 个行为测试；31 个真实编译器产物端到端通过 | `bash script/verify.sh`；`bash script/extended.sh` | ✅ |
 | 5 | **开源合规** | Apache-2.0（`LICENSE`）；`NOTICE` 标注格式与算法参考来源；`corpus/PROVENANCE.md` 说明 41 个 `.wasm` 的来源、许可证与 SHA-256（`corpus/good/SHA256SUMS`、`corpus/extended/SHA256SUMS`）；所有夹具均为自制或 MoonBit 编译器产出，无第三方二进制 | `cat NOTICE`；`cat corpus/PROVENANCE.md` | ✅ |
@@ -48,15 +48,15 @@ e984b6a  S10: finalise BOUNDARY
 1a64953  S7: MoonBit code generation
 ```
 
-公开仓库需要你确认后执行（我不会擅自推送）：
+仓库**已创建**：`https://github.com/wuhaiting321/moonlift`（空仓库，未初始化 README）。按你的要求**先不推送**，README 申报书的"GitHub 仓库"字段留白。等你过目确认后，再执行：
 
-1. 在 GitHub 建空仓库（不要勾选初始化 README）；
-2. `git remote add origin <url>`；
-3. 把 `moon.mod` 的 `name = "moonlift/moonlift"` 改成 `<你的账号>/moonlift`，全局替换 `moonlift/moonlift`；
-4. 把 git 身份从占位值 `moonlift-dev <moonlift-dev@users.noreply.github.com>` 改成真实身份；
-5. `git push -u origin main`，把仓库链接填进飞书申报书。
+1. 把 `moon.mod` 的 `name = "moonlift/moonlift"` 改成 `<你的账号>/moonlift`，全局替换 `moonlift/moonlift`；
+2. 把 git 身份从占位值 `moonlift-dev <moonlift-dev@users.noreply.github.com>` 改成真实身份；
+3. `git remote add origin https://github.com/wuhaiting321/moonlift`；
+4. `git push -u origin main`；
+5. 把仓库链接回填到 README 申报书"GitHub 仓库"栏。
 
-**注意**：第 3 步会改变模块名，`script/check.sh` 里没有钉住模块名字符串，但改完仍应重跑一次门禁确认。
+**注意**：第 1 步会改变模块名，`script/check.sh` 里没有钉住模块名字符串，但改完仍应重跑一次门禁确认。
 
 ## 5. 三分钟复现路径（评委视角）
 
@@ -66,5 +66,5 @@ bash script/demo.sh        # info → struct-stats → decompile → moon check 
 bash script/check.sh       # 完整门禁，ALL GREEN
 cat BOUNDARY.md            # 支持矩阵 / 13 条语义偏差 / 20 条已知限制
 cat docs/ACCEPTANCE.md     # 本表
-cat docs/申报书.md          # 一页中文申报书
+cat README.md             # 项目申报书（见 README 顶部）
 ```

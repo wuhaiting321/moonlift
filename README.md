@@ -1,5 +1,69 @@
 # moonlift
 
+> Wasm 字节码 → 可编译、行为一致的 MoonBit 源码的反编译器 · 2026 MoonBit Hackathon（11 月赛）
+
+## 项目申报书
+
+### 基本信息
+
+| 项 | 内容 |
+|---|---|
+| 项目名称 | moonlift — Wasm 字节码到可编译 MoonBit 源码的反编译器 |
+| 参与者 | 吴海婷 |
+| 联系方式 | 19177746962@163.com |
+| GitHub 仓库 | （待项目过目后推送，先留白） |
+| Online Demo | 本地一键复现：`bash script/demo.sh`（约 3 分钟，无需联网、无需 C 工具链） |
+| 项目方向 | 开发者工具 / 编译器 / WebAssembly 生态迁移 |
+
+### 意向介绍
+
+MoonBit 的 `wasm-gc` / `js` 后端贴不了 C FFI，大量存量 C/Rust 生态无法直接迁入；moonlift 做的是那条**迁移通道**：把一个 MVP 子集的 `.wasm` 文件，反编译成 `moon build` 能通过、且**行为与原件一致**的 MoonBit 源码包，让既有 wasm 资产在 `wasm` / `wasm-gc` / `js` 三端重新可用。它不是"又一个 wasm 解析库"，而是把二进制资产变回可维护、可审计、可继续开发的源码。
+
+截至 2026-11-20，在 mooncakes.io 全量 **3,882 个模块**、GitHub / Gitee 与已报名项目等**可检索范围内**，未发现 `decompiler` / `wasm2mbt` / `wasm2c` 的直接重复实现；刻意避开了已有大量参赛者拥挤的生态模块方向。
+
+### 核心逻辑梳理
+
+1. **宽解析、窄生成**：`info` 能解析 `v128` / 多返回值 / `datacount` / name 段；代码生成对不支持的函数逐个报码并生成 trap 桩，而非整模块拒绝或静默降级。
+2. **类型化栈模拟 = 表达式重建 + 类型检查**：逐条指令维护操作数栈、恢复成表达式树，同一遍顺带完成类型检查；对"读取存活于一次写入之后"的重排隐患强制溢出到临时量。
+3. **构造树结构化**（不写 Relooper）：走 wasm 自带的 `block`/`loop`/`if` 嵌套树，`block`→一次性 `while true`、`loop`→真循环、跨层 `br` 用 `Int brk` 逐层解绕、`br_table`→`match`。
+4. **边值在前驱落盘**：分支携带的值由前驱在边上写入临时量，而不是在使用点凭空读取——由此修掉"能编译但算错"的三类 bug（条件 `return` 被吞、入口值未绑定、`br_table` 载荷读未写临时量）。
+5. **语义按实测分流**：与 MoonBit 一致的算子直接输出；除法溢出、`min(0,-0)`、NaN 传播、ties-to-even 等不一致的走 `runtime/runtime.mbt` 具名 helper；浮点常量按位模式输出。
+6. **三方独立差分验证**：MoonBit 出调用计划 → Node 跑**原始 wasm** 出答案 → bash 把答案写成生成包里的测试 → `moon test` 跑**生成代码**比对，两边不是同一套实现。
+7. **与 wabt 独立对拍**：解码器逐条指令与 WebAssembly Binary Toolkit 比对，作为"自己跑通"之外的独立判据。
+8. **语料可溯源**：41 个 `.wasm` 全部自制或由 MoonBit 编译器产出，逐文件 SHA-256 + 来源说明，无第三方二进制。
+9. **验证分层**：单测（编译）→ 零告警 `moon check`（命名/裁剪）→ 行为冒烟（跑起来）→ 差分（与原件一致），每一层都能筛出上一层看不见的问题。
+
+### 参考项目 / 资源
+
+| 项目 / 资源 | 链接 | 许可 | 用途 |
+|---|---|---|---|
+| WebAssembly Core Specification | https://www.w3.org/TR/wasm-core-1/ | W3C 规范 | 二进制格式与指令语义的规范定义（只实现行为，不复制文本） |
+| wabt（WebAssembly Binary Toolkit） | https://github.com/WebAssembly/wabt | Apache-2.0 | 独立实现的解码对拍基准 |
+| MoonBit 工具链 | https://www.moonbitlang.com | 官方工具 | 语料产出 + 目标后端 |
+
+### 后续可支持 / 评审相关
+
+- 补 `native` 后端：本机缺 MSVC 未验证，装上即可把验证矩阵从三端扩到四端。
+- 收窄拒绝面：把 `call_indirect`、多返回值、批量内存、GC/引用类型逐项纳入生成。
+- 差分输入随机化：当前参数是固定对角序列，可扩成随机/模糊输入（需保证失败可复现）。
+- 生态对接：作为 mooncakes.io 上的 wasm 资产迁移工具发布，服务 `wasm-gc`/`js` 后端生态。
+
+### 未完成项与边界（如实申报）
+
+| # | 未完成 / 收缩 | 说明 |
+|---|---|---|
+| 1 | 仓库公开 | 全程本地提交、尚未推送；过目后推送再回填上方"GitHub 仓库" |
+| 2 | `native` 后端未验证 | 本机无 MSVC，`--target llvm` 缺 `prelude.mi`；记录于 `BOUNDARY.md` §4.2 |
+| 3 | M3 有意收缩 | trap/NaN 跳过单列而非算通过（MoonBit `trap` 是 abort 不可捕获）；浮点按精确位比较、不放宽 1 ULP；未比对调用后内存哈希；参数为固定对角序列而非随机 |
+| 4 | M4 部分达成 | 生成包行为测试只在 `wasm-gc` 实跑；三端一致性证据为 CLI 分析输出与编译 |
+| 5 | 3 个性能指标未产出 | 吞吐 KB/s、代码膨胀比、执行性能比——正确性判据是"与独立实现一致"，时间投给了 41 模块 + 384 次差分，理由见 `PLAN.md` §7 |
+| 6 | 明确拒绝的 wasm 特性 | `call_indirect` `E111`、多值 `E112`、SIMD/GC/引用类型、原子/线程、批量内存、非函数导入等，逐个报码 + 绝对字节偏移 + trap 桩 |
+| 7 | 生成代码是 witness 而非漂亮源码 | 一次性循环、`brk` 变量、`// b3` 注释——定位是"可归因、可审计、可继续开发" |
+
+**验证数据**（`bash script/check.sh` 全量复现）：14,383 行 MoonBit（要求 ≥500）；152 单测双端通过；41 模块零错误零告警；wabt 对拍 4,485/4,485；差分 384/384 匹配 0 失败（164 trap/NaN 跳过）；真实 20 KB 产物 395/395 可达块各产出一次。
+
+---
+
 **Decompile WebAssembly (MVP subset) binaries into compilable, readable MoonBit source.**
 
 `moonlift` reads a `.wasm` file, recovers functions, control flow and expressions, and emits a
@@ -472,7 +536,7 @@ down in `BOUNDARY.md` §4 rather than quietly omitted.
 | `script/check.sh` | one-command gate (format, 3 targets, tests, corpus, decompile, verify, extended) | done |
 | `script/verify.sh` | differential harness: MoonBit plan → Node answers → generated tests | done |
 | `script/extended.sh` | 31 real modules: checksum → decode → decompile → zero-warning `moon check` | done |
-| `docs/` | [DESIGN](docs/DESIGN.md), [ACCEPTANCE](docs/ACCEPTANCE.md), [AI_USAGE](docs/AI_USAGE.md), [申报书](docs/申报书.md) | done |
+| `docs/` | [DESIGN](docs/DESIGN.md), [ACCEPTANCE](docs/ACCEPTANCE.md), [AI_USAGE](docs/AI_USAGE.md) | done |
 
 ## Roadmap
 

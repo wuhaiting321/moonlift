@@ -455,7 +455,7 @@ packages to compile at zero warnings.
     with `native` available the same commands work unchanged.
 19. **The repository is not yet public.** All work is committed locally; no git remote is configured
     and nothing has been pushed. Publishing is a separate, explicit step — see
-    `docs/申报书.md` for the one item that has to be ticked before submission.
+    `README.md` for the one item that has to be ticked before submission.
 20. **Traps and NaNs are skipped, not compared.** The original plan (`PLAN.md` §7) counted a trap
     as a comparable observation and allowed ≤1 ULP for floats. The shipped harness does neither:
     `trap(...)` in MoonBit is an abort, not a raisable error — trying to `catch` it produces warning

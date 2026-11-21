@@ -50,4 +50,4 @@ printf '%-42s %s\n' 'generated packages compiling cleanly *' '41 / 41 (script/ch
 printf '%-42s %s\n' 'differential calls *' '384 compared, 384 matched, 0 failed (script/verify.sh)'
 printf '%-42s %s\n' 'cross-target identity *' 'wasm-gc / js / wasm identical (script/check.sh)'
 printf '\n* full-gate numbers; run `bash script/check.sh` to re-verify (about 3.5 min).\n'
-printf 'Full documentation: README.md, BOUNDARY.md, docs/ACCEPTANCE.md, docs/申报书.md\n'
+printf 'Full documentation: README.md (含申报书), BOUNDARY.md, docs/ACCEPTANCE.md\n'

@@ -11,7 +11,7 @@
 | 方案与步骤分解 | 产出 `PLAN.md` 的 S0–S11、MVP 契约 M1–M5、风险预案 | 每一步的「完成判据」都是可执行命令，`script/check.sh` 逐条钉住 |
 | 代码编写 | 14,383 行 MoonBit（解码器、CFG、类型化栈、结构化器、代码生成器、运行时库、CLI）、`oracle.js`、门禁脚本、语料生成器 | `moon fmt --check` + 三端 `moon check` + 152 个白盒单测 + 41 个生成包零告警编译 |
 | 语料构造 | 手写 `.wat` 夹具、31 个 MoonBit 小程序源码、19 个畸形样本 | 良构样本与 wabt 逐指令对拍（4,485/4,485）；畸形样本按**文件名里的错误码**被门禁逐个核对，期望值不可能随实现漂移 |
-| 文档 | README / BOUNDARY / DESIGN / ACCEPTANCE / 申报书 | 申报书里的每个数字都在 `script/` 里有对应命令；`ACCEPTANCE.md` 列出命令与状态的映射 |
+| 文档 | README（含申报书）/ BOUNDARY / DESIGN / ACCEPTANCE | 申报书里的每个数字都在 `script/` 里有对应命令；`ACCEPTANCE.md` 列出命令与状态的映射 |
 
 ## 2. 人（使用者）做了什么决策
 
