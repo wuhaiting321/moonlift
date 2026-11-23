@@ -19,9 +19,9 @@ test "error tags are unique and well formed" {
   }
   assert_eq(codes[0].tag(), "E001")
   // Appending is allowed, renumbering is not: a tag, once published, keeps its
-  // number even when a new code joins its group (E011 sits between E010 and
+  // number even when a new code joins its group (E012 sits between E011 and
   // E101). What must not happen is `E108` becoming `E109`.
-  assert_eq(codes[11].tag(), "E101")
+  assert_eq(codes[12].tag(), "E101")
   assert_eq(codes[codes.length() - 1].tag(), "E112")
   let mut has_e108 = false
   for c in codes {

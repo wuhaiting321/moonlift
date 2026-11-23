@@ -55,7 +55,9 @@ for f in "${fixtures[@]}"; do
     grand_fail=$((grand_fail + 1))
     continue
   fi
-  grep -v '^init' "$dir/calls.tsv" > "$dir/calls.body"
+  # `init` and `host` are directives, not calls; match the whole first field so
+  # that an export called `hostcall` is not filtered out by a prefix rule.
+  awk -F'\t' '$1 != "init" && $1 != "host"' "$dir/calls.tsv" > "$dir/calls.body"
   n=$(grep -c . "$dir/calls.body" || true)
   if [ "$n" -eq 0 ]; then
     printf '%-12s %6s %6s %6s %6s  %s\n' "$name" 0 - - - "no calls"

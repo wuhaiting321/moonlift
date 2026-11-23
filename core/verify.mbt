@@ -24,6 +24,29 @@ pub struct PlannedCall {
 }
 
 ///|
+/// One imported memory, table or global, in the shape the reference engine has
+/// to supply.
+///
+/// The generated package materialises these imports itself, so this exists for
+/// one consumer only: `corpus/tools/oracle.js`, which cannot instantiate the
+/// original without a host. A host object of the wrong size is not a
+/// behavioural difference, it is a `LinkError` — and a `LinkError` reported as
+/// "the decompiler disagrees" would be the worst possible bug in a differential
+/// test.
+pub struct HostImport {
+  /// `memory`, `table` or `global`.
+  kind : String
+  /// `i32`, `i64`, `f32`, `f64` for a global, `funcref` for a table.
+  ty : String
+  /// Declared minimum: pages for a memory, slots for a table.
+  min : Int32
+  /// Declared maximum, or 65536 when the module sets none.
+  max : Int32
+  /// Whether a global import is mutable. Always false for memory and table.
+  mutable_ : Bool
+}
+
+///|
 pub struct CallPlan {
   calls : Array[PlannedCall]
   /// Exports nothing will be compared for, with the reason.
@@ -31,6 +54,14 @@ pub struct CallPlan {
   /// Whether the module has a `start` section, which the harness has to run
   /// before using the module (wasm runs it at instantiation).
   has_start : Bool
+  /// Whether the harness has to call `moonlift_init()` at all: true when there
+  /// is a `start` section, and also when a data or element segment is placed at
+  /// a `global.get` — those are laid down there, because only the host knows the
+  /// value, and wasm lays them down at instantiation whether or not `start`
+  /// exists.
+  needs_init : Bool
+  /// The non-function imports, so the reference engine can build a host.
+  host : Array[HostImport]
 }
 
 // --- argument pools -------------------------------------------------------
@@ -311,7 +342,83 @@ pub fn plan_calls(
       })
     }
   }
-  { calls, skipped, has_start: m.has_start, }
+  {
+    calls,
+    skipped,
+    has_start: m.has_start,
+    needs_init: m.has_start || has_deferred_segment(m),
+    host: host_imports(m),
+  }
+}
+
+///|
+/// Whether any segment is placed at a `global.get`. The emitter moves exactly
+/// those into `moonlift_init()`, so the harness has to call it or the memory and
+/// the table stay empty.
+fn has_deferred_segment(m : Module) -> Bool {
+  let mut any = false
+  for d in m.datas {
+    if d.bytes.length() > 0 && !offset_is_const(d.offset) {
+      any = true
+    }
+  }
+  for e in m.elems {
+    if !offset_is_const(e.offset) {
+      any = true
+    }
+  }
+  any
+}
+
+///|
+/// The limits a host has to meet, per imported object.
+fn host_imports(m : Module) -> Array[HostImport] {
+  let out : Array[HostImport] = []
+  let mut i = 0
+  while i < m.imported_tables {
+    let l = m.tables[i].limits
+    out.push({
+      kind: "table",
+      ty: "funcref",
+      min: l.min.reinterpret_as_int(),
+      max: if l.has_max {
+        l.max.reinterpret_as_int()
+      } else {
+        65536
+      },
+      mutable_: false,
+    })
+    i = i + 1
+  }
+  i = 0
+  while i < m.imported_memories {
+    let l = m.memories[i].limits
+    out.push({
+      kind: "memory",
+      ty: "i32",
+      min: l.min.reinterpret_as_int(),
+      max: if l.has_max {
+        l.max.reinterpret_as_int()
+      } else {
+        65536
+      },
+      mutable_: false,
+    })
+    i = i + 1
+  }
+  i = 0
+  while i < m.imported_globals {
+    let g = m.globals[i]
+    out.push({
+      kind: "global",
+      ty: g.ty.name(),
+      min: 0,
+      max: 0,
+      mutable_: g.mutable,
+    })
+    i = i + 1
+  }
+  out
 }
 
 // --- the plan as text -----------------------------------------------------
@@ -330,7 +437,12 @@ pub fn plan_calls(
 /// a MoonBit package has no instantiation step.
 pub fn plan_text(p : CallPlan) -> String {
   let b = StringBuilder()
-  if p.has_start {
+  for h in p.host {
+    b.write_string(
+      "host\t\{h.kind}\t\{h.ty}\t\{h.min}\t\{h.max}\t\{if h.mutable_ { "mutable" } else { "immutable" }}\n",
+    )
+  }
+  if p.needs_init {
     b.write_string("init\t-\t-\t-\t-\n")
   }
   for c in p.calls {
@@ -352,7 +464,7 @@ pub fn plan_summary_text(
   b.write_string("\{path} -> \{out_dir}/\n")
   b.write_string("calls      \{p.calls.length()} planned\n")
   b.write_string(
-    "start      \{if p.has_start { "yes, run moonlift_init() first" } else { "none" }}\n",
+    "start      \{if p.has_start { "yes, run moonlift_init() first" } else if p.needs_init { "none, but segments wait for moonlift_init()" } else { "none" }}\n",
   )
   if p.skipped.length() > 0 {
     b.write_string("skipped    \{p.skipped.length()} export(s)\n")

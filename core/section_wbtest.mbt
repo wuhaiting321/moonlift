@@ -182,9 +182,15 @@ test "the data count section is allowed between element and code" {
   let elem_sec = section(9, b"\x00")
   let count_sec = section(12, b"\x01")
   let code_sec = section(10, cat([b"\x01", b"\x02", b"\x00\x0b"]))
+  // A memory, so that the data segment has somewhere to go: since the 11-23
+  // revision a segment without its container is rejected rather than silently
+  // emitted against an object that does not exist.
+  let mem_sec = section(5, b"\x01\x00\x01")
   let data_sec = section(11, cat([b"\x01", b"\x00\x41\x00\x0b", b"\x01z"]))
   let m = decode(
-    module_of([type_sec, func_sec, elem_sec, count_sec, code_sec, data_sec]),
+    module_of([
+      type_sec, func_sec, mem_sec, elem_sec, count_sec, code_sec, data_sec,
+    ]),
   )
   assert_true(m.has_data_count)
   assert_eq(m.data_count, 1)
@@ -346,14 +352,101 @@ test "rejects an export index past the function space" {
 }
 
 ///|
-test "rejects a memory import" {
-  let d = expect_fail(
-    module_of([
-      section(2, cat([b"\x01", b"\x03env", b"\x03mem", b"\x02", b"\x00\x01"])),
+test "accepts the three non-function imports and keeps the index spaces apart" {
+  // memory (min 1), table (min 8), global i32 immutable — all imported.
+  let import_sec = section(
+    2,
+    cat([
+      b"\x03", b"\x03env", b"\x03mem", b"\x02", b"\x00\x01", b"\x03env", b"\x03tbl",
+      b"\x01", b"\x70\x00\x08", b"\x03env", b"\x04base", b"\x03", b"\x7f\x00",
     ]),
   )
-  assert_eq(d.code.tag(), "E107")
-  assert_true(d.message.contains("memory import"))
+  let m = decode(module_of([import_sec]))
+  assert_eq(m.imported_memories, 1)
+  assert_eq(m.memories.length(), 1)
+  assert_eq(m.memories[0].limits.min.reinterpret_as_int(), 1)
+  assert_eq(m.imported_tables, 1)
+  assert_eq(m.tables.length(), 1)
+  assert_eq(m.tables[0].limits.min.reinterpret_as_int(), 8)
+  assert_eq(m.imported_globals, 1)
+  assert_eq(m.globals.length(), 1)
+  assert_true(m.globals[0].imported)
+  assert_true(!m.globals[0].mutable)
+}
+
+///|
+test "an imported memory counts towards the one-memory rule" {
+  // imported memory, then a memory section that declares another one
+  let import_sec = section(
+    2,
+    cat([b"\x01", b"\x03env", b"\x03mem", b"\x02", b"\x00\x01"]),
+  )
+  let mem_sec = section(5, b"\x01\x00\x01")
+  let d = expect_fail(module_of([import_sec, mem_sec]))
+  assert_eq(d.code.tag(), "E106")
+  assert_true(d.message.contains("more than one memory"))
+}
+
+///|
+test "rejects a second table, imported or declared" {
+  let table_sec = section(4, cat([b"\x02", b"\x70\x00\x01", b"\x70\x00\x01"]))
+  let d = expect_fail(module_of([table_sec]))
+  assert_eq(d.code.tag(), "E106")
+  assert_true(d.message.contains("more than one table"))
+}
+
+///|
+test "rejects a segment placed at a global the module defines itself" {
+  let mem_sec = section(5, b"\x01\x00\x01")
+  let global_sec = section(6, cat([b"\x01", b"\x7f\x00\x41\x00\x0b"]))
+  // data segment 0, active, offset (global.get 0), one byte
+  let data_sec = section(11, cat([b"\x01", b"\x00", b"\x23\x00\x0b", b"\x01a"]))
+  let d = expect_fail(module_of([mem_sec, global_sec, data_sec]))
+  assert_eq(d.code.tag(), "E012")
+  assert_true(d.message.contains("defines itself"))
+}
+
+///|
+test "rejects a segment placed at a mutable imported global" {
+  let import_sec = section(
+    2,
+    cat([b"\x01", b"\x03env", b"\x04base", b"\x03", b"\x7f\x01"]),
+  )
+  let mem_sec = section(5, b"\x01\x00\x01")
+  let data_sec = section(11, cat([b"\x01", b"\x00", b"\x23\x00\x0b", b"\x01a"]))
+  let d = expect_fail(module_of([import_sec, mem_sec, data_sec]))
+  assert_eq(d.code.tag(), "E012")
+  assert_true(d.message.contains("mutable"))
+}
+
+///|
+test "rejects a segment placed at an imported global of the wrong type" {
+  let import_sec = section(
+    2,
+    cat([b"\x01", b"\x03env", b"\x04base", b"\x03", b"\x7e\x00"]),
+  )
+  let mem_sec = section(5, b"\x01\x00\x01")
+  let data_sec = section(11, cat([b"\x01", b"\x00", b"\x23\x00\x0b", b"\x01a"]))
+  let d = expect_fail(module_of([import_sec, mem_sec, data_sec]))
+  assert_eq(d.code.tag(), "E012")
+  assert_true(d.message.contains("needs i32"))
+}
+
+///|
+test "rejects a segment section whose container does not exist" {
+  // element segment, but no table
+  let elem_sec = section(
+    9,
+    cat([b"\x01", b"\x00", b"\x41\x00\x0b", b"\x01\x00"]),
+  )
+  let d1 = expect_fail(module_of([elem_sec]))
+  assert_eq(d1.code.tag(), "E010")
+  assert_true(d1.message.contains("no table"))
+  // data segment, but no memory
+  let data_sec = section(11, cat([b"\x01", b"\x00", b"\x41\x00\x0b", b"\x01a"]))
+  let d2 = expect_fail(module_of([data_sec]))
+  assert_eq(d2.code.tag(), "E010")
+  assert_true(d2.message.contains("no memory"))
 }
 
 ///|

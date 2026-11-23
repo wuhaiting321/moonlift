@@ -62,7 +62,10 @@ for f in "${fixtures[@]}"; do
     continue
   fi
 
-  grep -v '^init' "$dir/calls.tsv" > "$dir/calls.body"
+  # `init` and `host` are directives for the harness and the reference engine,
+  # not calls: they must not reach the line-by-line paste below. Matched on the
+  # whole first field, not on a prefix — `hostcall` is an export name.
+  awk -F'\t' '$1 != "init" && $1 != "host"' "$dir/calls.tsv" > "$dir/calls.body"
   n=$(grep -c . "$dir/calls.body" || true)
   if [ "$n" -eq 0 ]; then
     printf '%-16s %7s %7s %7s  %s\n' "$name" 0 - - "no exported function to call"

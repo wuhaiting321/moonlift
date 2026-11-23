@@ -147,17 +147,23 @@ pub fn report(m : Module, label : String) -> String {
   b.write_string("\n")
   b.write_string("types     \{m.types.length()}\n")
   b.write_string(
-    "imports   \{m.imported_func_count()} (all func; other import kinds are rejected)\n",
+    "imports   \{m.imported_func_count()} func, \{m.imported_tables} table, \{m.imported_memories} memory, \{m.imported_globals} global\n",
   )
   b.write_string(
     "functions \{m.defined_func_count()} defined, \{m.imported_func_count()} imported\n",
   )
-  b.write_string("tables    \{m.tables.length()}\n")
-  b.write_string("memories  \{m.memories.length()}\n")
+  b.write_string(
+    "tables    \{m.tables.length()} (\{m.imported_tables} imported)\n",
+  )
+  b.write_string(
+    "memories  \{m.memories.length()} (\{m.imported_memories} imported)\n",
+  )
   for mem in m.memories {
     b.write_string("            \{mem.limits.render()}\n")
   }
-  b.write_string("globals   \{m.globals.length()}\n")
+  b.write_string(
+    "globals   \{m.globals.length()} (\{m.imported_globals} imported)\n",
+  )
   b.write_string(
     "exports   \{m.exports.length()} (\{render_export_breakdown(m)})\n",
   )

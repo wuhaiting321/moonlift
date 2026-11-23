@@ -1,7 +1,11 @@
 ///|
-/// One imported function. Only functions may be imported: the decoder rejects
-/// table, memory and global imports with `E107`, because a decompiled function
-/// body cannot be generated without knowing the memory it indexes.
+/// One imported function.
+///
+/// A function import is the only import kind that needs a name of its own: the
+/// other three are described exactly like their defined counterparts, so they go
+/// into `tables`, `memories` and `globals` at the front of those arrays — the
+/// same order the binary format puts them in, and the same order the index space
+/// uses. `Module::imported_table_count` and friends say where the boundary is.
 pub struct ImportedFunc {
   /// Module string as written by the producer, e.g. `wasi_snapshot_preview1`.
   module_name : String
@@ -27,10 +31,15 @@ pub struct Memory {
 
 ///|
 /// A global variable with its constant initialiser.
+///
+/// An imported global has no initialiser in the binary: the host supplies the
+/// value. `init` is then the zero of `ty` and `imported` is true, so the emitter
+/// knows to make it a host-settable cell rather than a copy of a constant.
 pub struct Global {
   ty : ValType
   mutable : Bool
   init : ConstExpr
+  imported : Bool
 }
 
 ///|
@@ -125,6 +134,14 @@ pub struct Module {
   tables : Array[Table]
   memories : Array[Memory]
   globals : Array[Global]
+  /// How many entries at the front of `tables`, `memories` and `globals` came
+  /// from the import section. Those arrays are the index spaces the binary
+  /// format defines — imports first, definitions after — so a `global.get 2`
+  /// needs no translation, and only code that must know *which* half a slot
+  /// belongs to has to consult these.
+  imported_tables : Int32
+  imported_memories : Int32
+  imported_globals : Int32
   exports : Array[Export]
   elems : Array[Elem]
   codes : Array[Code]

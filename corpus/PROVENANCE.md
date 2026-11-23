@@ -155,7 +155,7 @@ so the reported error code identifies one specific check:
 | `bad_multimem.wasm` | `E106` | two memories |
 | `bad_data_flag.wasm` | `E109` | passive data segment |
 | `bad_body_end.wasm` | `E005` | function body not terminated by `end` |
-| `bad_import_kind.wasm` | `E107` | memory import |
+| `bad_import_kind.wasm` | `E005` | import kind 4 — 1.0 defines only 0–3, and a memory import is legal since the 11-23 revision |
 | `bad_const_expr.wasm` | `E006` | `local.get` inside a constant expression |
 
 ## Known non-fixture: MoonBit output that uses `@fs`

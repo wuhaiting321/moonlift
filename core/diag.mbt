@@ -17,13 +17,13 @@ pub enum ErrorCode {
   E009BadUtf8 // name section or import string is not valid UTF-8
   E010BadData // data / element segment out of bounds
   E011BadStack // code section does not type-check
+  E012BadConstExpr // constant expression names a global it may not
   E101Gc // gc / struct / array proposal (0xFB)
   E102Simd // fixed-width SIMD (0xFD)
   E103Threads // atomics / shared memory (0xFE)
   E104Exceptions // exception handling opcodes
   E105TailCall // return_call / return_call_indirect
   E106MultiMemory // more than one memory, or memory64 flag
-  E107NonFuncImport // memory / table / global import
   E108Irreducible // CFG cannot be structured
   E109BulkMemory // bulk-memory / passive segment constructs
   E110MultiTable // call_indirect / memory.size naming a second table or memory
@@ -49,13 +49,13 @@ pub fn all_codes() -> Array[ErrorCode] {
     E009BadUtf8,
     E010BadData,
     E011BadStack,
+    E012BadConstExpr,
     E101Gc,
     E102Simd,
     E103Threads,
     E104Exceptions,
     E105TailCall,
     E106MultiMemory,
-    E107NonFuncImport,
     E108Irreducible,
     E109BulkMemory,
     E110MultiTable,
@@ -78,13 +78,13 @@ pub fn ErrorCode::tag(self : ErrorCode) -> String {
     E009BadUtf8 => "E009"
     E010BadData => "E010"
     E011BadStack => "E011"
+    E012BadConstExpr => "E012"
     E101Gc => "E101"
     E102Simd => "E102"
     E103Threads => "E103"
     E104Exceptions => "E104"
     E105TailCall => "E105"
     E106MultiMemory => "E106"
-    E107NonFuncImport => "E107"
     E108Irreducible => "E108"
     E109BulkMemory => "E109"
     E110MultiTable => "E110"
@@ -137,7 +137,8 @@ pub fn ErrorCode::hint(self : ErrorCode) -> String {
     E002BadMagic => "not a wasm file (missing \\0asm)"
     E003BadVersion => "only binary format version 1 is supported"
     E004BadLeb128 => "corrupt length or index encoding"
-    E005BadSection => "section size or order is inconsistent"
+    E005BadSection =>
+      "a section field is outside what the format allows: size, order, or a discriminant"
     E006BadOpcode => "opcode outside the MVP instruction set"
     E007BadType => "value type outside i32/i64/f32/f64"
     E008BadIndex => "index points past the end of its table"
@@ -145,6 +146,8 @@ pub fn ErrorCode::hint(self : ErrorCode) -> String {
     E010BadData => "segment range exceeds memory or table bounds"
     E011BadStack =>
       "the code section does not type-check; run `disasm --stack` for the offset"
+    E012BadConstExpr =>
+      "a constant expression may only read an imported immutable global of the right type"
     E101Gc =>
       "rebuild without the GC proposal (use -mno-reference-types style flags)"
     E102Simd => "rebuild without SIMD (disable auto-vectorisation)"
@@ -152,8 +155,6 @@ pub fn ErrorCode::hint(self : ErrorCode) -> String {
     E104Exceptions => "rebuild without exception handling"
     E105TailCall => "rebuild without tail calls (-fno-optimize-sibling-calls)"
     E106MultiMemory => "rebuild with a single memory and 32-bit pointers"
-    E107NonFuncImport =>
-      "only function imports are supported; link memory/table/global statically"
     E108Irreducible => "structural jump into a loop body; see BOUNDARY.md"
     E109BulkMemory =>
       "rebuild without bulk-memory (passive segments, memory.copy/fill)"

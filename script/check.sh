@@ -355,6 +355,7 @@ control.wasm|6 emitted, 0 refused, 0 skipped
 fib.wasm|3 emitted, 0 refused, 0 skipped
 globals.wasm|5 emitted, 0 refused, 0 skipped
 imports.wasm|3 emitted, 0 refused, 0 skipped
+imported.wasm|8 emitted, 0 refused, 0 skipped
 memory.wasm|6 emitted, 0 refused, 0 skipped
 nested.wasm|2 emitted, 0 refused, 0 skipped
 stack.wasm|8 emitted, 0 refused, 0 skipped
@@ -392,7 +393,7 @@ step "decompile: the generated package behaves like the original"
 # written, and a dispatch that carries a value read from a temporary nobody
 # stored. All three change values, and only these tests would have said so.
 for pair in control:control_wbtest.mbt fib:fib_wbtest.mbt nested:nested_wbtest.mbt \
-  table:table_wbtest.mbt indirect:indirect_wbtest.mbt; do
+  table:table_wbtest.mbt indirect:indirect_wbtest.mbt imported:imported_wbtest.mbt; do
   f=${pair%%:*}
   t=${pair##*:}
   d="$gen/$f"
@@ -416,29 +417,32 @@ step "verify: the generated packages agree with the original modules"
 # it; the numbers below are pinned so that a drop in coverage is visible rather
 # than absorbed.
 #
-# Two fixtures are excluded and say so: `imports` and `moonbit_fib` call into a
-# host, and a host is exactly what neither side has. Their generated packages
-# still compile (the step above proves it) and their imports are trapping stubs.
+# `moonbit_fib` is excluded and says so: it calls into a host, and a host is
+# exactly what neither side has. Its generated package still compiles (the step
+# above proves it) and its imports are trapping stubs. `imported` is now
+# *included*: the plan carries the shape of every non-function import, so Node
+# can build the host object and the comparison covers the exports that do not go
+# through a function import.
 if bash script/verify.sh > /tmp/moonlift_verify.log 2>&1; then
   line=$(grep '^calls compared:' /tmp/moonlift_verify.log)
   compared=$(printf '%s' "$line" | sed -E 's/.*compared: ([0-9]+).*/\1/')
   matched=$(printf '%s' "$line" | sed -E 's/.*matched: ([0-9]+).*/\1/')
   skipped=$(printf '%s' "$line" | sed -E 's/.*skipped \(trap\/NaN\): ([0-9]+).*/\1/')
   failed=$(printf '%s' "$line" | sed -E 's/.*failed: ([0-9]+).*/\1/')
-  if [ "$compared" -eq 472 ] && [ "$matched" -eq 472 ] && [ "$failed" -eq 0 ]; then
-    printf 'ok   472 calls compared against Node, 472 matched, %s skipped\n' "$skipped"
+  if [ "$compared" -eq 481 ] && [ "$matched" -eq 481 ] && [ "$failed" -eq 0 ]; then
+    printf 'ok   481 calls compared against Node, 481 matched, %s skipped\n' "$skipped"
   else
-    printf 'FAIL verify: %s compared, %s matched, %s failed (expected 472/472/0)\n' \
+    printf 'FAIL verify: %s compared, %s matched, %s failed (expected 481/481/0)\n' \
       "$compared" "$matched" "$failed"
     fail=1
   fi
   # A skipped call is a call where the original trapped or returned NaN, so it is
   # not evidence either way. The count is pinned for the same reason as above:
   # if it jumps, coverage moved even though every assertion still passed.
-  if [ "$skipped" -le 260 ]; then
+  if [ "$skipped" -le 280 ]; then
     printf 'ok   skipped calls stayed at %s (traps and NaNs in the original)\n' "$skipped"
   else
-    printf 'FAIL verify: %s calls were skipped, expected at most 260\n' "$skipped"
+    printf 'FAIL verify: %s calls were skipped, expected at most 280\n' "$skipped"
     fail=1
   fi
 else

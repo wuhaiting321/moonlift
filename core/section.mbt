@@ -195,6 +195,10 @@ fn parse_import_section(
   r : Reader,
   imports : Array[ImportedFunc],
   types : Array[FuncType],
+  tables : Array[Table],
+  memories : Array[Memory],
+  globals : Array[Global],
+  counts : ImportCounts,
 ) -> Unit raise ReadFail {
   let n = vec_count(r, 4, "import")
   let mut i = 0
@@ -203,31 +207,66 @@ fn parse_import_section(
     let field_name = r.name()
     let at_kind = r.position()
     let kind = r.u8().to_uint()
-    if kind != 0x00U {
-      let what = if kind == 0x01U {
-        "table"
-      } else if kind == 0x02U {
-        "memory"
-      } else if kind == 0x03U {
-        "global"
-      } else {
-        fail_at(
-          at_kind,
-          E005BadSection,
-          "import kind 0x\{hex_u8(kind)} is invalid",
-        )
+    if kind == 0x00U {
+      let at_idx = r.position()
+      let type_idx = r.u32_leb().reinterpret_as_int()
+      check_index(at_idx, type_idx, types.length(), "type")
+      imports.push({ module_name, field_name, type_idx, })
+    } else if kind == 0x01U {
+      read_reftype(r)
+      let limits = read_limits(r)
+      counts.tables = counts.tables + 1
+      tables.push({ limits, })
+    } else if kind == 0x02U {
+      let limits = read_limits(r)
+      counts.memories = counts.memories + 1
+      memories.push({ limits, })
+    } else if kind == 0x03U {
+      let ty = read_valtype(r)
+      let at = r.position()
+      let flag = r.u8().to_uint()
+      let mutable = match flag {
+        0x00U => false
+        0x01U => true
+        _ =>
+          fail_at(
+            at,
+            E005BadSection,
+            "global mutability flag is invalid in an import",
+          )
       }
+      counts.globals = counts.globals + 1
+      globals.push({ ty, mutable, init: zero_const(ty), imported: true, })
+    } else {
       fail_at(
         at_kind,
-        E107NonFuncImport,
-        "\{what} import '\{module_name}.\{field_name}' cannot be reproduced: the decompiled body would not know its layout",
+        E005BadSection,
+        "import kind is invalid: only func, table, memory and global exist",
       )
     }
-    let at_idx = r.position()
-    let type_idx = r.u32_leb().reinterpret_as_int()
-    check_index(at_idx, type_idx, types.length(), "type")
-    imports.push({ module_name, field_name, type_idx, })
     i = i + 1
+  }
+}
+
+///|
+/// How many imports of each non-function kind were seen. Filled by the section
+/// parser, because it is the only place that sees the kind byte: the arrays it
+/// appends to cannot tell an imported table from a declared one afterwards.
+priv struct ImportCounts {
+  mut tables : Int32
+  mut memories : Int32
+  mut globals : Int32
+}
+
+///|
+/// The constant an imported global holds before the host sets it.
+fn zero_const(ty : ValType) -> ConstExpr {
+  match ty {
+    I32 => I32Const(0)
+    I64 => I64Const(0L)
+    F32 => F32Const(0U)
+    F64 => F64Const(0UL)
+    V128 => I32Const(0)
   }
 }
 
@@ -249,25 +288,44 @@ fn parse_function_section(
 }
 
 ///|
+/// The element type of a table. WebAssembly 1.0 has exactly one, `funcref`,
+/// encoded as 0x70; 0x6F is `externref`, which arrived with reference types.
+fn read_reftype(r : Reader) -> Unit raise ReadFail {
+  let at = r.position()
+  let elem = r.u8().to_uint()
+  if elem == 0x6FU {
+    fail_at(at, E101Gc, "externref table needs the reference-types proposal")
+  }
+  if elem != 0x70U {
+    fail_at(
+      at,
+      E007BadType,
+      "table element type is not funcref (1.0 has no other reference type)",
+    )
+  }
+}
+
+///|
+/// The table section. 1.0 allows at most one table in the whole module, counted
+/// across imports and declarations, so a second one is a bulk-memory or
+/// reference-types module: as much a boundary as multi-memory, and named here
+/// rather than silently ignored while table 0 is emitted.
 fn parse_table_section(
   r : Reader,
   tables : Array[Table],
 ) -> Unit raise ReadFail {
+  let at = r.position()
   let n = vec_count(r, 3, "table")
+  if tables.length() + n > 1 {
+    fail_at(
+      at,
+      E106MultiMemory,
+      "module declares more than one table (1.0 allows at most one)",
+    )
+  }
   let mut i = 0
   while i < n {
-    let at = r.position()
-    let elem = r.u8().to_uint()
-    if elem == 0x6FU {
-      fail_at(at, E101Gc, "externref table needs the reference-types proposal")
-    }
-    if elem != 0x70U {
-      fail_at(
-        at,
-        E007BadType,
-        "table element type 0x\{hex_u8(elem)} is not funcref",
-      )
-    }
+    read_reftype(r)
     let limits = read_limits(r)
     tables.push({ limits, })
     i = i + 1
@@ -297,10 +355,64 @@ fn parse_memory_section(
 }
 
 ///|
+/// What a constant expression is allowed to read, in 1.0.
+///
+/// `global.get` there may name an *imported* global only, it must be immutable,
+/// and its type must be the one the position needs. All three rules exist for the
+/// same reason: a segment offset has to be the same at every instantiation, and
+/// only an imported immutable global has that property. A module that breaks the
+/// rule is invalid, not unsupported, so this is an `E0xx` and not an `E1xx`.
+fn check_const_global(
+  e : ConstExpr,
+  globals : Array[Global],
+  imported : Int32,
+  want : ValType?,
+  at : Int32,
+) -> Unit raise ReadFail {
+  match e {
+    GlobalGet(i) => {
+      if i < 0 || i >= globals.length() {
+        fail_at(at, E008BadIndex, "global index \{i} is out of range")
+      }
+      if i >= imported {
+        fail_at(
+          at,
+          E012BadConstExpr,
+          "constant expression names global \{i}, which this module defines itself",
+        )
+      }
+      let g = globals[i]
+      if g.mutable {
+        fail_at(
+          at,
+          E012BadConstExpr,
+          "global \{i} is mutable, and a constant expression reads only immutable globals",
+        )
+      }
+      match want {
+        Some(t) =>
+          if !vt_eq(g.ty, t) {
+            fail_at(
+              at,
+              E012BadConstExpr,
+              "global \{i} has type \{g.ty.name()}, this position needs \{t.name()}",
+            )
+          }
+        None => ()
+      }
+    }
+    _ => ()
+  }
+}
+
+///|
 fn parse_global_section(
   r : Reader,
   globals : Array[Global],
 ) -> Unit raise ReadFail {
+  // Every global already in the array came from the import section, so its
+  // length is exactly the boundary a constant expression may not cross.
+  let imported = globals.length()
   let n = vec_count(r, 3, "global")
   let mut i = 0
   while i < n {
@@ -318,8 +430,10 @@ fn parse_global_section(
         "global mutability flag 0x\{hex_u8(flag)} is invalid",
       )
     }
+    let at_init = r.position()
     let init = read_const_expr(r)
-    globals.push({ ty, mutable, init, })
+    check_const_global(init, globals, imported, Some(ty), at_init)
+    globals.push({ ty, mutable, init, imported: false, })
     i = i + 1
   }
 }
@@ -386,6 +500,9 @@ fn parse_element_section(
   r : Reader,
   elems : Array[Elem],
   func_count : Int32,
+  table_count : Int32,
+  globals : Array[Global],
+  imported_globals : Int32,
 ) -> Unit raise ReadFail {
   let n = vec_count(r, 3, "element segment")
   let mut i = 0
@@ -399,7 +516,20 @@ fn parse_element_section(
         "element segment flag \{flags} needs bulk-memory / reference types",
       )
     }
+    // An active segment needs a table to write into, and saying so here is what
+    // keeps the promise that a rejected input never becomes a package that does
+    // not compile: the emitter would otherwise reference a table it never wrote.
+    // Passive segments are refused as bulk memory before this point matters.
+    if table_count == 0 {
+      fail_at(
+        at,
+        E010BadData,
+        "element segment, but the module declares no table",
+      )
+    }
+    let at_off = r.position()
     let offset = read_const_expr(r)
+    check_const_global(offset, globals, imported_globals, Some(I32), at_off)
     let cnt = vec_count(r, 1, "element function")
     let funcs : Array[Int32] = []
     let mut j = 0
@@ -492,7 +622,13 @@ fn parse_code_section(
 }
 
 ///|
-fn parse_data_section(r : Reader, datas : Array[Data]) -> Unit raise ReadFail {
+fn parse_data_section(
+  r : Reader,
+  datas : Array[Data],
+  globals : Array[Global],
+  imported_globals : Int32,
+  memory_count : Int32,
+) -> Unit raise ReadFail {
   let n = vec_count(r, 2, "data segment")
   let mut i = 0
   while i < n {
@@ -508,7 +644,16 @@ fn parse_data_section(r : Reader, datas : Array[Data]) -> Unit raise ReadFail {
         "data segment flag \{flags} needs bulk-memory / multi-memory",
       )
     }
+    if memory_count == 0 {
+      fail_at(
+        at,
+        E010BadData,
+        "data segment, but the module declares no memory",
+      )
+    }
+    let at_off = r.position()
     let offset = read_const_expr(r)
+    check_const_global(offset, globals, imported_globals, Some(I32), at_off)
     if !offset.is_known_i32() {
       fail_at(at, E010BadData, "data segment offset is not an i32 constant")
     }
@@ -645,6 +790,7 @@ pub fn decode(data : Bytes) -> Module raise ReadFail {
   let customs : Array[Custom] = []
   let sections : Array[SectionRef] = []
   let func_names : Array[FuncName] = []
+  let counts = { tables: 0, memories: 0, globals: 0, }
   let mut start_func : Int32 = 0
   let mut has_start = false
   let mut data_count = 0
@@ -688,7 +834,9 @@ pub fn decode(data : Bytes) -> Module raise ReadFail {
     } else if sid == 1U {
       parse_type_section(body, types)
     } else if sid == 2U {
-      parse_import_section(body, imports, types)
+      parse_import_section(
+        body, imports, types, tables, memories, globals, counts,
+      )
     } else if sid == 3U {
       parse_function_section(body, func_types, types)
     } else if sid == 4U {
@@ -716,11 +864,24 @@ pub fn decode(data : Bytes) -> Module raise ReadFail {
       )
       has_start = true
     } else if sid == 9U {
-      parse_element_section(body, elems, imports.length() + func_types.length())
+      parse_element_section(
+        body,
+        elems,
+        imports.length() + func_types.length(),
+        tables.length(),
+        globals,
+        counts.globals,
+      )
     } else if sid == 10U {
       parse_code_section(body, codes, func_types.length())
     } else if sid == 11U {
-      parse_data_section(body, datas)
+      parse_data_section(
+        body,
+        datas,
+        globals,
+        counts.globals,
+        memories.length(),
+      )
     } else {
       // Section 12: the data count, introduced with bulk memory. It is only a
       // number, so it is accepted as metadata. Whether the module actually uses
@@ -760,6 +921,9 @@ pub fn decode(data : Bytes) -> Module raise ReadFail {
     tables,
     memories,
     globals,
+    imported_tables: counts.tables,
+    imported_memories: counts.memories,
+    imported_globals: counts.globals,
     exports,
     elems,
     codes,
