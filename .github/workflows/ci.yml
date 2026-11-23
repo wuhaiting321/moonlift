@@ -1,7 +1,7 @@
 name: CI
 
 # Runs the same gate a reviewer runs locally: `bash script/check.sh`.
-# If this is green, the package builds on three targets, the 152 white-box
+# If this is green, the package builds on three targets, the 162 white-box
 # tests pass, the decoder agrees with wabt, every fixture decompiles into a
 # package that `moon check` accepts at zero warnings, and the generated code
 # matches the original modules under Node.
@@ -17,7 +17,7 @@ permissions:
 
 jobs:
   gate:
-    name: gate (3 targets, 152 tests, 384 differential calls)
+    name: gate (3 targets, 162 tests, 481 differential calls)
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
