@@ -134,28 +134,24 @@ moonlift 读取一个符合 **WebAssembly Core 1.0** 的 `.wasm` 文件，依次
 
 - **本项目许可证：Apache-2.0**（见 `LICENSE`）。
 - 第三方归属逐项标注于 `NOTICE`；语料来源、许可证与 SHA-256 见 `corpus/PROVENANCE.md`。
-- 41 个 `.wasm` 全部自制或由 MoonBit 编译器产出，**无第三方二进制**。
+- 43 个 `.wasm` 全部自制或由 MoonBit 编译器产出，**无第三方二进制**。
 
 ## 八、完成情况（实测于 2026-11-23）
 
 以下指标均可在仓库内自行复现，验收要求的达成情况以实际仓库内容为准。
 
-### 8.1 实测指标
+### 8.1 实测指标（摘要）
 
-| 指标 | 结果 | 复现命令 |
-|---|---|---|
-| MoonBit 源码行数（要求 ≥500） | **15,323**（生产 12,700 + 测试 2,623） | `find core runtime cmd -name '*.mbt' \| xargs wc -l` |
-| 白盒单测 | **162 / 162**，`wasm-gc` 与 `js` 双端通过 | `moon test --target wasm-gc` |
-| 语料模块 | **43**（11 自制 + 32 真实编译器产物） | `ls corpus/good/*.wasm corpus/extended/*.wasm \| wc -l` |
-| 畸形样本按码 + 偏移拒绝 | **19 / 19** | `bash script/check.sh` |
-| 解码器 vs wabt | **4,575 / 4,575 一致，0 不符**（62 条 SIMD 按设计不尝试） | `node corpus/tools/verify_decode.js` |
-| 真实 20 KB 产物结构化 | **400 / 400** 可达块各产出一次；75 / 79 主体结构化、3 按名拒绝、1 跳过、**0 判为非法** | `moon run cmd/main -- disasm corpus/good/moonbit_fib.wasm --struct-stats` |
-| 生成包可编译率 | **43 / 43，零错误且零告警** | `bash script/check.sh` + `bash script/extended.sh` |
-| 行为差分 vs 原件（Node） | **481 个调用，481 匹配，0 失败**；237 个 trap / NaN 跳过单列 | `bash script/verify.sh` |
-| 间接调用值 / 陷阱对拍 | **150 个用例**（102 个值相等 + 48 个两侧同为陷阱），0 失败 | `bash script/indirect.sh` |
-| 生成包行为测试 | **22 个**（control 6 / fib 3 / nested 2 / table 3 / indirect 4 / imported 4），期望值全部来自原件 | `bash script/check.sh` 冒烟段 |
-| 三端一致性 | 6 类输出在 `wasm-gc` / `js` / `wasm` 逐字节一致 | `bash script/check.sh` cross-target 段 |
-| 一键门禁 | **ALL GREEN**，离线 | `bash script/check.sh` |
+| 指标 | 结果 |
+|---|---|
+| MoonBit 源码（要求 ≥500 行） | **15,323** 行（生产 12,700 + 测试 2,623） |
+| 白盒单测 | **162 / 162**，`wasm-gc` 与 `js` 双端通过 |
+| 语料 | **43** 个模块（11 自制 + 32 真实编译器产物）+ **19** 个畸形样本按码 + 偏移全部按预期拒绝 |
+| 与独立实现一致 | wabt 逐指令 **4,575 / 4,575**；Node 跑原件差分 **481 / 481**；间接调用值 / 陷阱 **150 个用例 0 失败**；三端分析输出逐字节一致 |
+| 生成物质量 | **43 / 43** 生成包 `moon check` 零错误零告警；20 KB 真实产物 **400 / 400** 可达块各产出一次 |
+| 一键门禁 | `bash script/check.sh` → **ALL GREEN**（离线，上列各项全部在其中） |
+
+复现命令与逐项明细见 [docs/ACCEPTANCE.md](docs/ACCEPTANCE.md) §1–§3；此处只列结论。
 
 ### 8.2 未完成项与边界（如实申报）
 
