@@ -131,7 +131,7 @@ it, `globals.wasm`'s `f4()` returns 0 where the original returns 1 — a bug tha
 
 Integers compare as decimal text, floats as **signed bit patterns**. A call whose original traps,
 or returns a NaN, is *skipped* and counted in its own column — a skipped call is not a pass. This
-is why the report prints 384 compared / 384 matched / 164 skipped rather than a single percentage.
+is why the report prints 481 compared / 481 matched / 237 skipped rather than a single percentage.
 
 ## 4. Why verification is split three ways
 
@@ -153,8 +153,13 @@ the report says so.
 ## 5. What was deliberately not built
 
 - **No Relooper / graph dispatcher** — unreachable in this subset (§3.2).
-- **No `call_indirect` recovery** — `E111`, a trapping stub. Recovering a table dispatch from a
-  binary would require guessing the source-level indirection.
+- ~~No `call_indirect` recovery~~ — **built in the 11-23 revision.** The first version refused it as
+  `E111`, arguing a decompiled body could not reproduce a table dispatch. That argument was wrong:
+  the target is unknown only at *compile* time, which is what a dispatcher is for. The generated
+  module now keeps the table as function indices and gets one dispatcher per signature; the three
+  wasm traps are reproduced and compared against the original (`docs/INDIRECT_CALL.md`).
+- **No imported memory content** — an imported memory is materialised at its declared minimum and
+  zero-filled, because the host's bytes are not in the binary (`BOUNDARY.md` D14, `docs/IMPORTS.md`).
 - **No multi-value results** — `E112` at the signature, a trapping stub. The first version
   silently printed `vs[0]`; S9's real-compiler corpus exposed it.
 - **No native backend** — this machine has no MSVC and `--target llvm` needs a nightly with

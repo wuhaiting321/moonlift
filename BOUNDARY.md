@@ -20,9 +20,9 @@ command in `script/` disagree, that is a bug in one of them.
 | Instructions | every opcode `0x00`–`0xC4` with a known operand length: control, parametric, variable, memory, the numeric block, sign extension, plus `0xFC` bulk memory and the eight saturating truncations | `0xD0`–`0xD2` (reference types), `0xFB`, `0x1C`, tail calls, exception opcodes | `E006`, `E007`, `E101`, `E104`, `E105` |
 | Instructions with an unknown operand length | nothing — decoding **stops** at `0xFD`/`0xFE` and the body is marked partial | — | partial body, reported by `disasm` |
 | Memories | exactly one, 32-bit | `memory64`, multi-memory, shared memory | `E106`, `E103` |
-| Tables | any number, `funcref` only | `externref` tables | `E101` |
-| Imports | function imports only (S3 onward, surfaced as a `Host` trait whose default method traps) | memory/table/global imports | `E107` |
-| Data / element segments | active, table/memory 0, i32 constant offset | passive segments, element expressions | `E109` |
+| Tables | at most one, `funcref` only — indexed by `call_indirect`, initialised by active `elem` segments | a second table, `externref` tables | `E106`, `E101` |
+| Imports | all four kinds. A function import becomes a stub that traps; memory, table and global imports are **materialised** at their declared minimum and zero-filled, and a host may set the globals before `moonlift_init()` | — (nothing in 1.0) | — |
+| Data / element segments | active, table/memory 0, offset is an `i32` constant **or** a `global.get` of an imported immutable `i32` global; the latter is laid down by `moonlift_init()` | passive segments, element expressions, a `global.get` of a mutable or module-defined global | `E109`, `E012` |
 | Control flow | reducible CFGs — guaranteed by the decoder's label-depth check, not by luck; measured 0 irreducible in 78 bodies | a `br` / `br_if` / `br_table` depth beyond the enclosing labels; irreducible CFGs are unreachable from this subset (`E108` reserved, see §3 D3) | `E008`, `E108` |
 | Typing | every body the spec validates: operand types, block results, branch payloads, function result | a body that does not type-check (only reachable from a hand-patched or non-conforming producer) | `E011` |
 | Multi-value | recognised (type-index block types, signatures with several results) and reported by `info` | *generated*: a block typed by index, a call returning several values, or a function with several results | `E112` |
@@ -38,7 +38,7 @@ is a decision with a reason rather than an oversight.
 operand size we do not know (`0xFD` SIMD, `0xFE` atomics) cannot be skipped, because guessing would
 desynchronise the rest of the body and produce plausible-looking nonsense. Decoding stops there and
 `DecodedBody.complete` becomes false; everything before it is still valid IR with valid offsets.
-An opcode we fully understand but cannot generate (`0xFC` bulk memory, `call_indirect`) decodes
+An opcode we fully understand but cannot generate (`0xFC` bulk memory) decodes
 normally and is refused later, at the point of generation. Measured effect: of 79 bodies in the
 20 KB MoonBit artifact, 78 decode completely and 1 stops — the function whose name ends in `simd`.
 
@@ -123,17 +123,16 @@ and a test asserts that the tags stay unique and that the count matches.
 | E009 | malformed | bad UTF-8 | name or import string |
 | E010 | malformed | segment out of bounds | data/element range |
 | E011 | malformed | operand stack does not type-check | see §5; `disasm --stack` names the byte |
+| E012 | malformed | a constant expression names a global it may not | only an imported immutable global of the right type |
 | E101 | unsupported | GC / reference types | rebuild without reference types |
 | E102 | unsupported | SIMD | disable auto-vectorisation |
 | E103 | unsupported | threads/atomics | rebuild single-threaded |
 | E104 | unsupported | exceptions | rebuild without EH |
 | E105 | unsupported | tail calls | rebuild without sibling-call optimisation |
 | E106 | unsupported | multi-memory / memory64 | single 32-bit memory |
-| E107 | unsupported | non-function import | link memory/table/global statically |
 | E108 | unsupported | irreducible CFG | see §3 |
 | E109 | unsupported | bulk memory | no passive segments, no `memory.copy`/`fill` |
 | E110 | unsupported | second table/memory named | one table, one memory |
-| E111 | unsupported | indirect call through a table | inline the call |
 | E112 | unsupported | multi-value block type, multi-result call, or a function with several results | rebuild without multi-value |
 
 Rule: **reject, never silently degrade.** Emitting code that compiles but computes the wrong value is
@@ -228,11 +227,11 @@ so it is decided exactly.
 **Impact.** None on semantics; strictly less noise. `corpus/good/control.wasm` exercises both cases
 (`$guard` has no wrap, `$find_limit` wraps one arm).
 
-### D6 · Multi-value, `call_indirect` and multi-result bodies are refused per function — `E111`, `E112`
+### D6 · Multi-value bodies are refused per function — `E112`
 
 **Deviation.** A body is emitted as a whole or refused as a whole. MoonBit functions return one
-value, and there is no way to reproduce a table dispatch from recovered source, so 6 of 79 bodies in
-the real artifact are refused by name instead of approximated. A function whose *signature* declares
+value, so 3 of 79 bodies in the real artifact are refused by name instead of approximated (one uses
+`memory.copy`, two have several results). A function whose *signature* declares
 two or more results is refused at the signature, before any instruction is simulated: the emitter
 can only print `vs[0]`, and silently dropping the rest would be a wrong answer wearing a clean
 compile (this is what S9 found in the compiler's `umul128` helper; the fix is pinned by a unit test
@@ -244,7 +243,7 @@ and a call returning several values, so the refusal is one rule with three entry
 special cases.
 
 **Impact.** Each refusal is reported with its function index, its name, the byte offset and the code
-(`--struct-stats` lists all six). The remaining 72 bodies are complete; nothing is silently dropped —
+(`--struct-stats` lists all three). The remaining 75 bodies are complete; nothing is silently dropped —
 `structured + skipped + refused` is asserted to equal the function count in `script/check.sh`.
 
 ### D7 · The emitter drops an unreachable tail; the structurer still produces it
@@ -269,15 +268,15 @@ changes. Verified on the fixtures whose loops exit by `br_if` (`control.wasm`, `
 ### D8 · A body that cannot be translated becomes a trapping stub, not a missing function
 
 **Deviation.** A refused or skipped function is written as a function with its real signature and a
-body of `trap("f47 was not decompiled: E111 at byte 5431: ...")`. Its callers therefore still
+body of `trap("f47 was not decompiled: E112 at byte 5431: ...")`. Its callers therefore still
 compile, and the module runs everywhere except through that function.
 
-**Reason.** The alternative — omitting the function — leaves every caller uncompilable. Measured: 7
-errors on the real artifact, one per refused function that something still calls. A stub is also
+**Reason.** The alternative — omitting the function — leaves every caller uncompilable. Measured: 4
+stubs on the real artifact, one per refused or skipped function. A stub is also
 strictly safer than the other alternative, inventing a body: it stops at the call rather than
 returning a plausible wrong answer.
 
-**Impact.** `funcs.mbt` for the real artifact holds 79 function definitions, 7 of which are stubs;
+**Impact.** `funcs.mbt` for the real artifact holds 79 function definitions, 4 of which are stubs;
 the count is asserted in `script/check.sh` so a stub cannot quietly disappear. Each stub carries the
 diagnostic in its doc comment and in its `trap` message.
 
@@ -371,18 +370,42 @@ the ten hand-written fixtures never did, so ten clean `moon check` runs did not 
 semantics change. Pinned by `script/extended.sh`, which requires every one of the 31 generated
 packages to compile at zero warnings.
 
+### D14 · An imported memory, table and global are materialised, not linked
+
+**Deviation.** A module that imports `env.mem` gets a one-page memory of its own, not the host's
+object. The declared minimum is allocated, zero-filled and indexed exactly like a declared memory, so
+`memory.size`, the bounds check and every load are correct; the *contents* are not, because they are
+not in the binary. The same holds for a table (every slot `-1`, i.e. uninitialised) and for a global
+(`Ref(0)`, which is also what wasm gives a global nothing ever wrote to). A host that needs the bytes
+writes them before `moonlift_init()`.
+
+**Reason.** The alternatives are both worse. Refusing the import — what 0.1.0 did, `E107` — excludes
+most real output: `--import-memory` is the default for a wasm library built to be linked, and PIC
+output places its data at `global.get $__memory_base`. Inventing contents would be a wrong answer
+wearing a clean compile, which is the one failure mode this project refuses.
+
+**Impact.** A module whose behaviour depends on the host's initial memory bytes or table slots runs on
+zeros and empty slots until the host fills them. Both are named in the generated code's comments and
+in `docs/IMPORTS.md`. A segment placed at a `global.get` is laid down by `moonlift_init()` rather than
+at load, because the address is only known once the host has set that global — which is also why
+`verify` marks such a module as needing `moonlift_init()` even when it has no `start` section.
+
 ## 4. Known limitations at 0.1.0
 
-1. **The differential run covers exports, not bodies.** `script/verify.sh` compares 384 calls across
-   the 8 fixtures that do not need a host, and every one matches; a further 164 calls where the
-   original traps or returns NaN are skipped and counted separately. What it does *not* do: reach a
-   function that is not exported (nothing can call it, but nothing proves it either), or compare
-   anything inside a module that imports a host (`imports`, `moonbit_fib`), or invent argument
-   combinations — the plan is a fixed diagonal and four anchored rows over a fixed value pool. A
-   random-input mode is possible and was deliberately not built: a failure has to be reproducible
-   from the report alone. The 31 extended-corpus modules are also not compared: they all import a
-   host for `println`, so Node cannot instantiate them; what is checked for them is decode and a
-   clean generated package instead.
+1. **The differential run covers exports, not bodies.** `script/verify.sh` compares 481 calls across
+   11 fixtures, and every one matches; a further 237 calls where the original traps or returns NaN
+   are skipped and counted separately. A module that imports memory, table or global *is* covered:
+   the plan carries the shape of every non-function import, so Node can build the host object and
+   the comparison runs on both sides (`imported` contributes 7 compared calls, and the
+   two `imports` exports that never reach an imported function contribute 2 more). What it does *not*
+   do: reach a function that is not exported (nothing can call it, but nothing proves it either),
+   compare an export that goes through a *function* import (neither side has an implementation, so
+   both trap — `imports` and `moonbit_fib` are in this group), or invent argument combinations — the
+   plan is a fixed diagonal and four anchored rows over a fixed value pool. A random-input mode is
+   possible and was deliberately not built: a failure has to be reproducible from the report alone.
+   The 31 extended-corpus modules are also not compared: they all import a host function for
+   `println`, so the only exports they have are those that do not reach it; what is checked for them
+   is decode and a clean generated package instead.
 2. **native backend unverified.** This machine has no MSVC and `--target llvm` requires a nightly
    toolchain (`missing prelude.mi`). Verification therefore runs on `wasm`, `wasm-gc` and `js`.
    Installing VS Build Tools makes native available; it does not change any correctness criterion,
