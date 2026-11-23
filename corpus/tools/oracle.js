@@ -84,7 +84,15 @@ async function machine(file, tsv) {
     try {
       v = fn(...args);
     } catch (e) {
-      console.log("trap\t" + name + "\t" + type + "\t" + e.constructor.name);
+      // The message, not just the constructor: `script/indirect.sh` compares
+      // *which* trap fired, and an indirect call has three distinct ones.
+      const why =
+        e && e.message
+          ? String(e.message).replace(/[\t\n]/g, " ")
+          : e && e.constructor
+            ? e.constructor.name
+            : "trap";
+      console.log("trap\t" + name + "\t" + type + "\t" + why);
       continue;
     }
     const text = render(v, type);

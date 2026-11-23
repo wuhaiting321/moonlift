@@ -290,6 +290,8 @@ fn subst(ctx : Ctx, b : Int32, e : Expr) -> Expr {
     EUn(t, k, x) => EUn(t, k, subst(ctx, b, x))
     EConv(f, t, m, x) => EConv(f, t, m, subst(ctx, b, x))
     ECall(f, args) => ECall(f, subst_list(ctx, b, args))
+    ECallIndirect(t, i, args) =>
+      ECallIndirect(t, subst(ctx, b, i), subst_list(ctx, b, args))
     ESelect(x, y, z) =>
       ESelect(subst(ctx, b, x), subst(ctx, b, y), subst(ctx, b, z))
     EMemoryGrow(x) => EMemoryGrow(subst(ctx, b, x))

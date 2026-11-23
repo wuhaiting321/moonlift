@@ -207,20 +207,22 @@ printf 'ok   all good fixtures type-check\n'
 
 # The real artifact is the only input large enough to exercise the recovery on
 # code nobody wrote for it. The counts are pinned because every one of them is a
-# claim in the README: 72 of 79 bodies analysed, 6 refused by name (bulk memory,
-# two call_indirect, two multi-value), 1 skipped (SIMD).
+# claim in the README: 75 of 79 bodies analysed, 3 refused by name (bulk memory,
+# two multi-value), 1 skipped (SIMD). Before `call_indirect` was generated the
+# count was 72 and 6 — three real bodies were refused for a construct this
+# project now handles.
 stats=$(cli disasm corpus/good/moonbit_fib.wasm --stats)
-if printf '%s' "$stats" | grep -q '^analysed        72 of 79 bodies$'; then
-  printf 'ok   moonbit_fib: 72 of 79 bodies analysed\n'
+if printf '%s' "$stats" | grep -q '^analysed        75 of 79 bodies$'; then
+  printf 'ok   moonbit_fib: 75 of 79 bodies analysed\n'
 else
-  printf 'FAIL moonbit_fib: expected 72 analysed bodies\n'
+  printf 'FAIL moonbit_fib: expected 75 analysed bodies\n'
   printf '%s\n' "$stats" | grep -E '^(analysed|skipped|refused)' | head -4
   fail=1
 fi
-if printf '%s' "$stats" | grep -q '^refused         6$'; then
-  printf 'ok   moonbit_fib: 6 refusals, each named\n'
+if printf '%s' "$stats" | grep -q '^refused         3$'; then
+  printf 'ok   moonbit_fib: 3 refusals, each named\n'
 else
-  printf 'FAIL moonbit_fib: expected 6 refusals\n'; fail=1
+  printf 'FAIL moonbit_fib: expected 3 refusals\n'; fail=1
 fi
 if printf '%s' "$stats" | grep -q 'rejected'; then
   printf 'FAIL moonbit_fib: a valid module was rejected as malformed\n'; fail=1
@@ -230,8 +232,8 @@ fi
 # 110 forced spills against 1 hazard spill is the shape the design predicts:
 # almost every temporary is a call result (an ordering requirement of the source),
 # and the reordering hazards are rare — but they are the ones that matter.
-if printf '%s' "$stats" | grep -q '^spills          111 (110 forced, 1 hazard)$'; then
-  printf 'ok   moonbit_fib: 111 spills, 1 of them a reordering hazard\n'
+if printf '%s' "$stats" | grep -q '^spills          115 (114 forced, 1 hazard)$'; then
+  printf 'ok   moonbit_fib: 115 spills, 1 of them a reordering hazard\n'
 else
   printf 'FAIL moonbit_fib: spill counts changed\n'
   printf '%s\n' "$stats" | grep '^spills' ; fail=1
@@ -296,14 +298,14 @@ while IFS='|' read -r label want; do
     printf 'FAIL %s is [%s], expected [%s]\n' "$label" "$got" "$want"; fail=1
   fi
 done <<'EOF'
-structured|72 of 79 bodies
-nodes|1115
-blocks emitted|395 of 395
+structured|75 of 79 bodies
+nodes|1136
+blocks emitted|400 of 400
 guards|32
 switches|0
 max depth|7
 skipped|1
-refused|6
+refused|3
 EOF
 # The two counts must add up: a body that is neither structured nor accounted
 # for has been dropped somewhere.
@@ -356,8 +358,9 @@ imports.wasm|3 emitted, 0 refused, 0 skipped
 memory.wasm|6 emitted, 0 refused, 0 skipped
 nested.wasm|2 emitted, 0 refused, 0 skipped
 stack.wasm|8 emitted, 0 refused, 0 skipped
-table.wasm|4 emitted, 2 refused, 0 skipped
-moonbit_fib.wasm|72 emitted, 6 refused, 1 skipped
+table.wasm|6 emitted, 0 refused, 0 skipped
+indirect.wasm|12 emitted, 0 refused, 0 skipped
+moonbit_fib.wasm|75 emitted, 3 refused, 1 skipped
 EOF
 
 # A refused body still gets a function: the signature is real and the body traps.
@@ -367,10 +370,10 @@ EOF
 if [ -f "$gen/moonbit_fib/funcs.mbt" ]; then
   n=$(grep -c '^pub fn f' "$gen/moonbit_fib/funcs.mbt")
   s=$(grep -cE '^/// wasm function [0-9]+: \*\*not decompiled\*\*' "$gen/moonbit_fib/funcs.mbt")
-  if [ "$n" -eq 79 ] && [ "$s" -eq 7 ]; then
-    printf 'ok   moonbit_fib: 79 function definitions, 7 of them trapping stubs\n'
+  if [ "$n" -eq 79 ] && [ "$s" -eq 4 ]; then
+    printf 'ok   moonbit_fib: 79 function definitions, 4 of them trapping stubs\n'
   else
-    printf 'FAIL moonbit_fib: %s definitions, %s stubs (expected 79 and 7)\n' "$n" "$s"
+    printf 'FAIL moonbit_fib: %s definitions, %s stubs (expected 79 and 4)\n' "$n" "$s"
     fail=1
   fi
 else
@@ -388,7 +391,8 @@ step "decompile: the generated package behaves like the original"
 # `return` (a loop that runs once), a block entry value read without ever being
 # written, and a dispatch that carries a value read from a temporary nobody
 # stored. All three change values, and only these tests would have said so.
-for pair in control:control_wbtest.mbt fib:fib_wbtest.mbt nested:nested_wbtest.mbt; do
+for pair in control:control_wbtest.mbt fib:fib_wbtest.mbt nested:nested_wbtest.mbt \
+  table:table_wbtest.mbt indirect:indirect_wbtest.mbt; do
   f=${pair%%:*}
   t=${pair##*:}
   d="$gen/$f"
@@ -421,25 +425,43 @@ if bash script/verify.sh > /tmp/moonlift_verify.log 2>&1; then
   matched=$(printf '%s' "$line" | sed -E 's/.*matched: ([0-9]+).*/\1/')
   skipped=$(printf '%s' "$line" | sed -E 's/.*skipped \(trap\/NaN\): ([0-9]+).*/\1/')
   failed=$(printf '%s' "$line" | sed -E 's/.*failed: ([0-9]+).*/\1/')
-  if [ "$compared" -eq 384 ] && [ "$matched" -eq 384 ] && [ "$failed" -eq 0 ]; then
-    printf 'ok   384 calls compared against Node, 384 matched, %s skipped\n' "$skipped"
+  if [ "$compared" -eq 472 ] && [ "$matched" -eq 472 ] && [ "$failed" -eq 0 ]; then
+    printf 'ok   472 calls compared against Node, 472 matched, %s skipped\n' "$skipped"
   else
-    printf 'FAIL verify: %s compared, %s matched, %s failed (expected 384/384/0)\n' \
+    printf 'FAIL verify: %s compared, %s matched, %s failed (expected 472/472/0)\n' \
       "$compared" "$matched" "$failed"
     fail=1
   fi
   # A skipped call is a call where the original trapped or returned NaN, so it is
   # not evidence either way. The count is pinned for the same reason as above:
   # if it jumps, coverage moved even though every assertion still passed.
-  if [ "$skipped" -le 200 ]; then
+  if [ "$skipped" -le 260 ]; then
     printf 'ok   skipped calls stayed at %s (traps and NaNs in the original)\n' "$skipped"
   else
-    printf 'FAIL verify: %s calls were skipped, expected at most 200\n' "$skipped"
+    printf 'FAIL verify: %s calls were skipped, expected at most 260\n' "$skipped"
     fail=1
   fi
 else
   printf 'FAIL verify: the generated packages do not agree with the originals\n'
   grep -E '^(TOTAL|verify:|.*FAILED)' /tmp/moonlift_verify.log | head -6
+  fail=1
+fi
+
+step "indirect: values equal, and the traps fire in the dispatcher"
+# `verify.sh` counts a call whose original traps as skipped. For `call_indirect`
+# that is most of the interesting surface, because three of its four outcomes
+# are traps: the index is outside the table, the slot was never initialised, or
+# the function there has another signature. `script/indirect.sh` runs one
+# process per call, compares value-vs-value and trap-vs-trap, and requires the
+# generated message to name `call_indirect` when the original's trap came from
+# the table — so an unrelated crash cannot be counted as the right trap.
+if bash script/indirect.sh > /tmp/moonlift_indirect.log 2>&1; then
+  while read -r line; do
+    printf 'ok   %s\n' "$line"
+  done <<< "$(grep -E '^(indirect|table) ' /tmp/moonlift_indirect.log)"
+else
+  printf 'FAIL indirect: a value or a trap disagrees with the original\n'
+  grep -E 'case |FAILED' /tmp/moonlift_indirect.log | head -6
   fail=1
 fi
 

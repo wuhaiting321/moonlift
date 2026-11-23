@@ -50,7 +50,15 @@ fn env(
   for l in locals {
     all.push(l)
   }
-  { locals: all, globals: [], results, funcs: [], has_memory: true, }
+  {
+    locals: all,
+    globals: [],
+    results,
+    funcs: [],
+    types: [],
+    has_memory: true,
+    has_table: true,
+  }
 }
 
 ///|
@@ -62,7 +70,9 @@ fn env_calling(results : Array[ValType]) -> FuncEnv {
     globals: [],
     results,
     funcs: [FuncType::new([I32], [I32])],
+    types: [FuncType::new([I32], [I32])],
     has_memory: true,
+    has_table: true,
   }
 }
 
@@ -372,7 +382,9 @@ test "stack: a call returning two values is refused as multi-value" {
     globals: [],
     results: [],
     funcs: [FuncType::new([I32], [I32, I32])],
+    types: [],
     has_memory: true,
+    has_table: true,
   }
   let d = failure([LocalGet(0), Call(0)], e)
   assert_eq(d.code.tag(), "E112")
@@ -411,7 +423,9 @@ test "stack: a memory instruction in a module without memory is an index error" 
     globals: [],
     results: [I32],
     funcs: [],
+    types: [],
     has_memory: false,
+    has_table: true,
   }
   let load = MemOp::new(I32, 4, false, false, 2, 0U)
   let d = failure([LocalGet(0), Mem(load)], e)
@@ -419,10 +433,100 @@ test "stack: a memory instruction in a module without memory is an index error" 
   assert_true(d.message.contains("no memory"))
 }
 
+// --- indirect calls -------------------------------------------------------
+
 ///|
-test "stack: call_indirect is refused by name rather than silently dropped" {
-  let d = failure([CallIndirect(0)], env([], [], []))
-  assert_eq(d.code.tag(), "E111")
+/// An environment with one `(i32) -> i32` function and a table to call through.
+fn env_indirect() -> FuncEnv {
+  {
+    locals: [],
+    globals: [],
+    results: [I32],
+    funcs: [FuncType::new([I32], [I32])],
+    types: [FuncType::new([I32], [I32])],
+    has_memory: true,
+    has_table: true,
+  }
+}
+
+///|
+test "stack: call_indirect keeps the index and the arguments, in stack order" {
+  // i32.const 7; i32.const 0; call_indirect (type 0)
+  let got = blocks(
+    [Const(I32V(7)), Const(I32V(0)), CallIndirect(0)],
+    env_indirect(),
+  )
+  assert_eq(
+    text(got[0]),
+    "t0 = call_indirect[type 0](i32.const 0, i32.const 7) | ",
+  )
+  assert_eq(out_text(got[0]), "(t0)")
+  // The target is only known at run time, but the call still executes where it
+  // appears, so the result is materialised rather than carried on the stack.
+  assert_eq(got[0].forced, 1)
+}
+
+///|
+test "stack: call_indirect without a table is an index error" {
+  let e : FuncEnv = {
+    locals: [],
+    globals: [],
+    results: [I32],
+    funcs: [FuncType::new([I32], [I32])],
+    types: [FuncType::new([I32], [I32])],
+    has_memory: true,
+    has_table: false,
+  }
+  let d = failure([Const(I32V(1)), Const(I32V(0)), CallIndirect(0)], e)
+  assert_eq(d.code.tag(), "E008")
+  assert_true(d.message.contains("needs a table"))
+}
+
+///|
+test "stack: call_indirect naming a missing type is an index error" {
+  let e : FuncEnv = {
+    locals: [],
+    globals: [],
+    results: [I32],
+    funcs: [],
+    types: [],
+    has_memory: true,
+    has_table: true,
+  }
+  let d = failure([Const(I32V(0)), CallIndirect(3)], e)
+  assert_eq(d.code.tag(), "E008")
+  assert_true(d.message.contains("type index 3"))
+}
+
+///|
+test "stack: call_indirect with a multi-value signature is refused" {
+  let e : FuncEnv = {
+    locals: [],
+    globals: [],
+    results: [],
+    funcs: [],
+    types: [FuncType::new([], [I32, I32])],
+    has_memory: true,
+    has_table: true,
+  }
+  let d = failure([Const(I32V(0)), CallIndirect(0)], e)
+  assert_eq(d.code.tag(), "E112")
+}
+
+///|
+test "stack: call_indirect checks its arguments against the named type" {
+  // The type is (f64) -> i32; an i32 is pushed as the argument.
+  let e : FuncEnv = {
+    locals: [],
+    globals: [],
+    results: [I32],
+    funcs: [],
+    types: [FuncType::new([F64], [I32])],
+    has_memory: true,
+    has_table: true,
+  }
+  let d = failure([Const(I32V(1)), Const(I32V(0)), CallIndirect(0)], e)
+  assert_eq(d.code.tag(), "E011")
 }
 
 ///|
@@ -453,7 +557,9 @@ test "stack: a global read live across a write to the same global is sunk" {
     globals: [I32],
     results: [I32],
     funcs: [],
+    types: [],
     has_memory: true,
+    has_table: true,
   }
   let got = blocks(
     [Const(I32V(1)), GlobalGet(0), Const(I32V(2)), GlobalSet(0), Bin(I32, Add)],
@@ -472,7 +578,9 @@ test "stack: a global read live across a call is sunk, because the callee may wr
     globals: [I32],
     results: [I32],
     funcs: [FuncType::new([I32], [I32])],
+    types: [],
     has_memory: true,
+    has_table: true,
   }
   let got = blocks([GlobalGet(0), Const(I32V(2)), Call(0), Bin(I32, Add)], e)
   // The argument `i32.const 2` is consumed by the call, so only the global read

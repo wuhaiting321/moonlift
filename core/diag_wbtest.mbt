@@ -9,7 +9,7 @@
 /// these tags verbatim, so a silent change would be a breaking change.
 test "error tags are unique and well formed" {
   let codes = all_codes()
-  assert_eq(codes.length(), 23)
+  assert_eq(codes.length(), 22)
   let seen : Array[String] = []
   for c in codes {
     let tag = c.tag()

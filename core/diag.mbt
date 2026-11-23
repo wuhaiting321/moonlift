@@ -27,7 +27,6 @@ pub enum ErrorCode {
   E108Irreducible // CFG cannot be structured
   E109BulkMemory // bulk-memory / passive segment constructs
   E110MultiTable // call_indirect / memory.size naming a second table or memory
-  E111IndirectCall // indirect call through a table
   E112MultiValue // multi-value block type or multi-result call
 }
 
@@ -60,7 +59,6 @@ pub fn all_codes() -> Array[ErrorCode] {
     E108Irreducible,
     E109BulkMemory,
     E110MultiTable,
-    E111IndirectCall,
     E112MultiValue,
   ]
 }
@@ -90,7 +88,6 @@ pub fn ErrorCode::tag(self : ErrorCode) -> String {
     E108Irreducible => "E108"
     E109BulkMemory => "E109"
     E110MultiTable => "E110"
-    E111IndirectCall => "E111"
     E112MultiValue => "E112"
   }
 }
@@ -161,8 +158,6 @@ pub fn ErrorCode::hint(self : ErrorCode) -> String {
     E109BulkMemory =>
       "rebuild without bulk-memory (passive segments, memory.copy/fill)"
     E110MultiTable => "only one table and one memory are supported"
-    E111IndirectCall =>
-      "a decompiled body cannot dispatch through a table; inline the call"
     E112MultiValue =>
       "rebuild without multi-value (several results, or a block typed by index)"
   }

@@ -663,6 +663,20 @@ fn Emit::expr_raw(self : Emit, e : Expr) -> String {
       b.write_string(")")
       b.to_string()
     }
+    // The callee is not known until run time, so the call goes through the
+    // dispatcher generated for this type index: it bounds-checks the index,
+    // rejects an uninitialised slot, checks the signature, and only then calls.
+    ECallIndirect(t, i, args) => {
+      let b = StringBuilder()
+      b.write_string("__ml_indirect_t\{t}(")
+      b.write_string(self.expr(i))
+      for a in args {
+        b.write_string(", ")
+        b.write_string(self.expr(a))
+      }
+      b.write_string(")")
+      b.to_string()
+    }
     ESelect(a, b, c) =>
       "(if \{self.cond(c)} { \{self.expr(a)} } else { \{self.expr(b)} })"
     EMemorySize => "mem.size()"
@@ -946,6 +960,10 @@ fn scan_expr(e : Expr, locals : Array[Bool], temps : Array[Bool]) -> Unit {
     EUn(_, _, a) => scan_expr(a, locals, temps)
     EConv(_, _, _, a) => scan_expr(a, locals, temps)
     ECall(_, args) => scan_exprs(args, locals, temps)
+    ECallIndirect(_, i, args) => {
+      scan_expr(i, locals, temps)
+      scan_exprs(args, locals, temps)
+    }
     ESelect(a, b, c) => {
       scan_expr(a, locals, temps)
       scan_expr(b, locals, temps)
@@ -1193,6 +1211,12 @@ fn mark_expr(e : Expr, used : Array[Bool]) -> Unit {
       for a in args {
         mark_expr(a, used)
       }
+    ECallIndirect(_, i, args) => {
+      mark_expr(i, used)
+      for a in args {
+        mark_expr(a, used)
+      }
+    }
     ESelect(a, b, c) => {
       mark_expr(a, used)
       mark_expr(b, used)
@@ -1339,6 +1363,8 @@ fn max_temp_expr(e : Expr) -> Int32 {
     EUn(_, _, a) => max_temp_expr(a)
     EConv(_, _, _, a) => max_temp_expr(a)
     ECall(_, args) => max_temp_exprs(args)
+    ECallIndirect(_, i, args) =>
+      max_temp2(max_temp_expr(i), max_temp_exprs(args))
     ESelect(a, b, c) =>
       max_temp3(max_temp_expr(a), max_temp_expr(b), max_temp_expr(c))
     EMemoryGrow(a) => max_temp_expr(a)
@@ -1613,6 +1639,217 @@ fn stub_text(m : Module, idx : Int32, why : String) -> String {
   b.to_string()
 }
 
+// --- the function table ----------------------------------------------------
+
+///|
+/// True when `xs` already contains `v`.
+fn mem_has(xs : Array[Int32], v : Int32) -> Bool {
+  let mut found = false
+  for x in xs {
+    if x == v {
+      found = true
+    }
+  }
+  found
+}
+
+///|
+/// Every type index a `call_indirect` in the module names, in first-use order.
+///
+/// The scan reads decoded bodies rather than analyses on purpose: a function
+/// whose body is refused still needs its dispatcher, because another function
+/// can reach the same type through the table.
+fn indirect_type_indices(m : Module) -> Array[Int32] {
+  let out : Array[Int32] = []
+  let mut idx = m.imported_func_count()
+  while idx < m.func_count() {
+    match attempt(() => decode_func(m, idx)) {
+      Ok(body) =>
+        for r in body.instrs {
+          match r.instr {
+            CallIndirect(t) =>
+              if t >= 0 && t < m.types.length() && !mem_has(out, t) {
+                out.push(t)
+              }
+            _ => ()
+          }
+        }
+      Err(_) => ()
+    }
+    idx = idx + 1
+  }
+  out
+}
+
+///|
+/// A signature as a reader would write it, for comments and trap messages.
+fn sig_text(ft : FuncType) -> String {
+  let b = StringBuilder()
+  b.write_string("(")
+  let mut i = 0
+  while i < ft.params.length() {
+    if i > 0 {
+      b.write_string(", ")
+    }
+    b.write_string(ty_name(ft.params[i]))
+    i = i + 1
+  }
+  b.write_string(") -> ")
+  if ft.results.length() == 0 {
+    b.write_string("Unit")
+  } else {
+    b.write_string(ty_name(ft.results[0]))
+  }
+  b.to_string()
+}
+
+///|
+/// True when two signatures are structurally equal.
+///
+/// wasm compares function types structurally, not by type index: a module may
+/// hold two type entries with the same signature, and a `call_indirect` naming
+/// one of them accepts a function declared with the other. Grouping dispatch
+/// arms by index instead would reject calls the original accepted.
+fn same_sig(a : FuncType, b : FuncType) -> Bool {
+  same_types(a.params, b.params) && same_types(a.results, b.results)
+}
+
+///|
+/// Every function in the index space whose signature equals `ft` — the exact set
+/// that a `call_indirect (type t)` may legally reach.
+fn funcs_with_sig(m : Module, ft : FuncType) -> Array[Int32] {
+  let out : Array[Int32] = []
+  let mut f = 0
+  while f < m.func_count() {
+    match m.func_type(f) {
+      Some(t) => if same_sig(t, ft) { out.push(f) }
+      None => ()
+    }
+    f = f + 1
+  }
+  out
+}
+
+///|
+/// The dispatcher for one `call_indirect` type index.
+///
+/// The three run-time checks wasm performs are all here, in the order the spec
+/// performs them: the index must be inside the table, the slot must not be null,
+/// and the function's type must equal the expected one. The last is not a
+/// comparison at run time — it is the set of arms below. A function whose
+/// signature differs cannot match an arm, so it reaches the trap, which is
+/// exactly what the engine would raise.
+fn dispatcher_text(m : Module, t : Int32) -> String {
+  let ft = m.types[t]
+  let b = StringBuilder()
+  b.write_string(
+    "\n///|\n/// `call_indirect` naming type \{t}, `\{sig_text(ft)}`.\n",
+  )
+  b.write_string(
+    "///\n/// One arm per function whose signature is structurally equal to type \{t};\n" +
+    "/// every other function index falls through to the trap. That is the wasm\n" +
+    "/// type check, written as a match instead of a run-time comparison.\n",
+  )
+  b.write_string("pub fn __ml_indirect_t\{t}(i : Int")
+  let mut k = 0
+  while k < ft.params.length() {
+    b.write_string(", a\{k} : \{ty_name(ft.params[k])}")
+    k = k + 1
+  }
+  b.write_string(")")
+  if ft.results.length() > 0 {
+    b.write_string(" -> \{ty_name(ft.results[0])}")
+  } else {
+    b.write_string(" -> Unit")
+  }
+  b.write_string(" {\n")
+  let arms = funcs_with_sig(m, ft)
+  if arms.length() == 0 {
+    // Still check the index and the slot: a trap for "no such signature" that
+    // fired before the bounds check would hide a real out-of-range call.
+    b.write_string(
+      "  ignore(__ml_table_at(i))\n  trap(\"call_indirect: no function has type \{sig_text(ft)}\")\n",
+    )
+  } else {
+    b.write_string("  match __ml_table_at(i) {\n")
+    for f in arms {
+      let callee = if f < m.imported_func_count() {
+        "h\{f}"
+      } else {
+        func_name(f)
+      }
+      b.write_string("    \{f} => \{callee}(")
+      let mut j = 0
+      while j < ft.params.length() {
+        if j > 0 {
+          b.write_string(", ")
+        }
+        b.write_string("a\{j}")
+        j = j + 1
+      }
+      b.write_string(")\n")
+    }
+    b.write_string(
+      "    _ => trap(\"call_indirect: table[\" + i.to_string() + \"] does not have type \{sig_text(ft)}\")\n",
+    )
+    b.write_string("  }\n")
+  }
+  b.write_string("}\n")
+  b.to_string()
+}
+
+///|
+/// The table itself, plus the two checks every indirect call starts with.
+fn table_text(m : Module) -> String {
+  if m.tables.length() == 0 {
+    return ""
+  }
+  let n = m.tables[0].limits.min.reinterpret_as_int()
+  let b = StringBuilder()
+  b.write_string(
+    "\n// The function table. wasm indexes it with an i32 at run time, so the\n" +
+    "// decompiled module holds the same table, as function indices. `-1` is a slot\n" +
+    "// no element segment filled: calling through it traps, as in the original.\n",
+  )
+  b.write_string("pub let __ml_table : Array[Int] = build_table()\n")
+  b.write_string("\n///|\nfn build_table() -> Array[Int] {\n")
+  b.write_string("  let t = Array::make(\{n}, -1)\n")
+  let mut i = 0
+  for e in m.elems {
+    let off = const_offset(e.offset)
+    let len = e.funcs.length()
+    b.write_string("  // element segment \{i}: table[\{off}..\{off + len}]\n")
+    b.write_string("  if \{off} < 0 || \{off} + \{len} > t.length() {\n")
+    b.write_string(
+      "    trap(\"element segment \{i} does not fit table[0..\{n})\")\n  }\n",
+    )
+    let mut k = 0
+    for f in e.funcs {
+      b.write_string("  t[\{off + k}] = \{f}\n")
+      k = k + 1
+    }
+    i = i + 1
+  }
+  b.write_string("  t\n}\n")
+  b.write_string(
+    "\n///|\n/// The table slot at `i`, or a trap. An index outside the table and an\n" +
+    "/// uninitialised slot are the two ways `call_indirect` fails before the type\n" +
+    "/// check even starts.\n",
+  )
+  b.write_string("pub fn __ml_table_at(i : Int) -> Int {\n")
+  b.write_string(
+    "  if i < 0 || i >= __ml_table.length() {\n" +
+    "    trap(\"call_indirect: index \" + i.to_string() + \" is outside table[0..\" + __ml_table.length().to_string() + \")\")\n" +
+    "  }\n",
+  )
+  b.write_string("  let f = __ml_table[i]\n")
+  b.write_string(
+    "  if f < 0 {\n    trap(\"call_indirect: table[\" + i.to_string() + \"] is uninitialised\")\n  }\n",
+  )
+  b.write_string("  f\n}\n")
+  b.to_string()
+}
+
 ///|
 /// The file holding the memory image, the globals and the import stubs.
 fn module_text(m : Module, emitted : Array[Int32]) -> String {
@@ -1661,6 +1898,12 @@ fn module_text(m : Module, emitted : Array[Int32]) -> String {
         "pub let g\{i} : Ref[\{ty_name(g.ty)}] = Ref(\{glob_init(g)})\n",
       )
       i = i + 1
+    }
+  }
+  if m.tables.length() > 0 {
+    b.write_string(table_text(m))
+    for t in indirect_type_indices(m) {
+      b.write_string(dispatcher_text(m, t))
     }
   }
   let imports = m.imported_func_count()

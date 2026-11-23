@@ -56,6 +56,12 @@ pub enum Expr {
   EUn(ValType, UnKind, Expr)
   EConv(ValType, ValType, ConvMode, Expr)
   ECall(Int32, Array[Expr])
+  /// A call through the module's function table: the type index the
+  /// instruction names, the index expression popped off the stack, and the
+  /// arguments. Kept apart from `ECall` because the callee is a *value* here,
+  /// so code generation has to route it through a dispatcher instead of naming
+  /// a function.
+  ECallIndirect(Int32, Expr, Array[Expr])
   /// then-value, else-value, condition.
   ESelect(Expr, Expr, Expr)
   EMemorySize
@@ -78,6 +84,8 @@ fn expr_mentions(e : Expr, l : Int32, g : Int32) -> Bool {
     EUn(_, _, a) => expr_mentions(a, l, g)
     EConv(_, _, _, a) => expr_mentions(a, l, g)
     ECall(_, args) => args_mention(args, l, g)
+    ECallIndirect(_, i, args) =>
+      expr_mentions(i, l, g) || args_mention(args, l, g)
     ESelect(a, b, c) =>
       expr_mentions(a, l, g) || expr_mentions(b, l, g) || expr_mentions(c, l, g)
     EMemoryGrow(a) => expr_mentions(a, l, g)
@@ -109,6 +117,28 @@ fn args_mention(xs : Array[Expr], l : Int32, g : Int32) -> Bool {
 }
 
 ///|
+fn args_read_any_global(xs : Array[Expr]) -> Bool {
+  let mut found = false
+  for x in xs {
+    if expr_reads_any_global(x) {
+      found = true
+    }
+  }
+  found
+}
+
+///|
+fn args_read_memory(xs : Array[Expr]) -> Bool {
+  let mut found = false
+  for x in xs {
+    if expr_reads_memory(x) {
+      found = true
+    }
+  }
+  found
+}
+
+///|
 /// True when the expression reads any global. Used before a call, which may
 /// write any of them.
 fn expr_reads_any_global(e : Expr) -> Bool {
@@ -128,6 +158,8 @@ fn expr_reads_any_global(e : Expr) -> Bool {
       }
       found
     }
+    ECallIndirect(_, i, args) =>
+      expr_reads_any_global(i) || args_read_any_global(args)
     ESelect(a, b, c) =>
       expr_reads_any_global(a) ||
       expr_reads_any_global(b) ||
@@ -159,6 +191,7 @@ fn expr_reads_memory(e : Expr) -> Bool {
       }
       found
     }
+    ECallIndirect(_, i, args) => expr_reads_memory(i) || args_read_memory(args)
     ESelect(a, b, c) =>
       expr_reads_memory(a) || expr_reads_memory(b) || expr_reads_memory(c)
     EMemoryGrow(a) => expr_reads_memory(a)
@@ -170,7 +203,7 @@ fn expr_reads_memory(e : Expr) -> Bool {
 /// Only used by `drop`, which elides a discarded pure expression entirely.
 fn expr_has_effect(e : Expr) -> Bool {
   match e {
-    ECall(_, _) | EMemoryGrow(_) => true
+    ECall(_, _) | ECallIndirect(_, _, _) | EMemoryGrow(_) => true
     EConst(_) | ELocal(_) | EGlobal(_) | ETemp(_) | EParam(_) | EMemorySize =>
       false
     ELoad(_, a) => expr_has_effect(a)
@@ -233,7 +266,11 @@ pub struct FuncEnv {
   results : Array[ValType]
   /// Signature of every callable function, in the unified index space.
   funcs : Array[FuncType]
+  /// The module's whole type section, because `call_indirect` names a type by
+  /// index rather than carrying a signature.
+  types : Array[FuncType]
   has_memory : Bool
+  has_table : Bool
 }
 
 ///|
@@ -278,7 +315,15 @@ pub fn func_env(m : Module, idx : Int32) -> FuncEnv {
     }
     i = i + 1
   }
-  { locals, globals, results, funcs, has_memory: m.memories.length() > 0, }
+  {
+    locals,
+    globals,
+    results,
+    funcs,
+    types: m.types,
+    has_memory: m.memories.length() > 0,
+    has_table: m.tables.length() > 0,
+  }
 }
 
 ///|
@@ -895,12 +940,36 @@ fn run_block(
         }
       }
       CallIndirect(t) => {
-        ignore_type_index(at, t)
-        fail_at(
-          at,
-          E111IndirectCall,
-          "call_indirect dispatches through a table, which a decompiled body cannot reproduce",
-        )
+        if !env.has_table {
+          fail_at(
+            at,
+            E008BadIndex,
+            "call_indirect needs a table, and the module declares none",
+          )
+        }
+        let ft = type_at(env, at, t)
+        if ft.results.length() > 1 {
+          fail_at(
+            at,
+            E112MultiValue,
+            "call_indirect returns \{ft.results.length()} values; multi-value is outside the subset",
+          )
+        }
+        // The index sits on top of the arguments, so it is popped first. The
+        // target is unknown here, which is why this is not just `Call`: the
+        // generated code has to look the function up and check its type at run
+        // time, exactly as the wasm engine would.
+        let idx = s.pop(at, I32, "call_indirect")
+        let args = s.pop_n(at, ft.params, "call_indirect")
+        // The callee is not known, so it may write memory and any global.
+        s.sink_loads()
+        s.sink_globals()
+        let e = ECallIndirect(t, idx, args)
+        if ft.results.length() == 0 {
+          s.stmts.push(SEval(e))
+        } else {
+          s.spill(e, ft.results[0])
+        }
       }
       Drop => {
         let v = s.pop_any(at, "drop")
@@ -1167,13 +1236,15 @@ fn require_memory(env : FuncEnv, at : Int32) -> Unit raise ReadFail {
 }
 
 ///|
-/// `call_indirect`'s type index is validated even though the instruction is
-/// refused: a bad index is a malformed input, and saying so is more useful than
-/// saying "unsupported".
-fn ignore_type_index(at : Int32, t : Int32) -> Unit raise ReadFail {
-  if t < 0 {
+/// The signature `call_indirect` names by type index.
+///
+/// A bad index is a malformed input, not an unsupported feature, and saying so
+/// is more useful than a generic refusal.
+fn type_at(env : FuncEnv, at : Int32, t : Int32) -> FuncType raise ReadFail {
+  if t < 0 || t >= env.types.length() {
     fail_at(at, E008BadIndex, "type index \{t} is out of range")
   }
+  env.types[t]
 }
 
 // --- one function ---------------------------------------------------------
@@ -1462,6 +1533,8 @@ pub fn Expr::render(self : Expr, m : Module) -> String {
     EConv(to, from, mode, a) =>
       "\{to.name()}.\{mode.suffix(from)}(\{a.render(m)})"
     ECall(f, args) => "call \{m.func_label(f)}(\{render_args(args, m)})"
+    ECallIndirect(t, i, args) =>
+      "call_indirect[type \{t}](\{i.render(m)}, \{render_args(args, m)})"
     ESelect(a, b, c) => "select(\{a.render(m)}, \{b.render(m)}, \{c.render(m)})"
     EMemorySize => "memory.size"
     EMemoryGrow(a) => "memory.grow(\{a.render(m)})"

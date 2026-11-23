@@ -251,7 +251,7 @@ pub fn report(m : Module, label : String) -> String {
   }
   if m.elems.length() > 0 {
     notes.push(
-      "\{m.elems.length()} active element segment(s): indirect calls resolve through a table at run time",
+      "\{m.elems.length()} active element segment(s): call_indirect resolves through table 0 at run time",
     )
   }
   if notes.length() > 0 {
