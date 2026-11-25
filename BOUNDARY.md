@@ -22,6 +22,7 @@ command in `script/` disagree, that is a bug in one of them.
 | Memories | exactly one, 32-bit | `memory64`, multi-memory, shared memory | `E106`, `E103` |
 | Tables | at most one, `funcref` only — indexed by `call_indirect`, initialised by active `elem` segments | a second table, `externref` tables | `E106`, `E101` |
 | Imports | all four kinds. A function import becomes a stub that traps; memory, table and global imports are **bound**: the host passes its instances to `moonlift_bind()`, the binding record is de-duplicated by `(module, name)` so repeated imports alias, and `moonlift_init()` lays the segments into the bound instances | — (nothing in 1.0) | — |
+| Several modules, one instance | two modules in one package share a `Memory` (and its `grow`), because the merge keeps one `runtime.mbt` and therefore one `Memory` type; `decompile a.wasm b.wasm -o pkg` | two *separate* packages sharing an instance — that needs a shared runtime package (D15) | D15 |
 | Data / element segments | active, table/memory 0, offset is an `i32` constant **or** a `global.get` of an imported immutable `i32` global; the latter is laid down by `moonlift_init()` | passive segments, element expressions, a `global.get` of a mutable or module-defined global | `E109`, `E012` |
 | Control flow | reducible CFGs — guaranteed by the decoder's label-depth check, not by luck; measured 0 irreducible in 78 bodies | a `br` / `br_if` / `br_table` depth beyond the enclosing labels; irreducible CFGs are unreachable from this subset (`E108` reserved, see §3 D3) | `E008`, `E108` |
 | Typing | every body the spec validates: operand types, block results, branch payloads, function result | a body that does not type-check (only reachable from a hand-patched or non-conforming producer) | `E011` |
@@ -396,10 +397,34 @@ own doc comment, `docs/SHARING.md` §5 and the `BOUNDARY` entry here all say so 
 `moonlift_init()` is once per instance rather than once per call, because re-copying segments over a
 memory the module has since written is a wrong answer, not a harmless repeat.
 
+### D15 · Sharing one instance across modules needs one package
+
+**Deviation.** In wasm, two modules that import the same `Memory` are given the same externval, and
+`memory.grow` in one is visible through `memory.size` in the other. Here each generated package copies
+`runtime.mbt`, so `pkg_a.Memory` and `pkg_b.Memory` are different types and no host can hand one value
+to both. The measured consequence is not a compile error but a wrong answer: each module grows a
+private memory and the second module's `size` never moves.
+
+**How it is resolved.** `moonlift decompile a.wasm b.wasm -o pkg` puts both modules in one package:
+one `runtime.mbt`, therefore one `Memory` type; one namespace, therefore a `m0_` / `m1_` prefix on
+every top-level name (`M0_` / `M1_` for the one type, because MoonBit type names start upper-case);
+one binding record per module, so the host fills `env_mem` in both with the same object; and one
+`moonlift_init_all()` that instantiates them in input order. Merging is the whole mechanism — nothing
+about the instance type changed.
+
+**What is still not supported.** Sharing between two *separate* packages, which would need a shared
+runtime package and therefore a dependency the generated package does not currently have. Function
+imports stay traps. A table cannot be shared meaningfully across modules at all, because a slot holds
+a function index belonging to one module's index space. And `start` ordering across merged modules is
+the command line's order, not a topological sort.
+
+**Impact.** `docs/MERGE.md` §4 is the before/after table; `script/merge.sh` is the five assertions;
+`corpus/good/shared_a.wasm` / `shared_b.wasm` are the pair. Pinned by the gate rather than promised.
+
 ## 4. Known limitations at 0.1.0
 
-1. **The differential run covers exports, not bodies.** `script/verify.sh` compares 498 calls across
-   12 fixtures, and every one matches; a further 237 calls where the original traps or returns NaN
+1. **The differential run covers exports, not bodies.** `script/verify.sh` compares 521 calls across
+   14 fixtures, and every one matches; a further 243 calls where the original traps or returns NaN
    are skipped and counted separately. A module that imports memory, table or global *is* covered:
    the plan carries the shape of every non-function import, so Node can build the host object and
    the comparison runs on both sides (`imported` contributes 7 compared calls, and the

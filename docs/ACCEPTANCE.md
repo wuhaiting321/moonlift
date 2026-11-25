@@ -9,29 +9,29 @@
 
 | # | 官方要求 | 本仓库的证据 | 复现命令 | 状态 |
 |---|---|---|---|---|
-| 1 | **MoonBit 为主** | 15,671 行 MoonBit 源码（`core/` 13,987 + `runtime/` 1,218 + `cmd/` 466），8 个 `_wbtest.mbt` 共 162 个白盒用例；CLI、解码器、分析器、代码生成器、调用计划全部用 MoonBit 写；生成物也是 MoonBit 包 | `find core runtime cmd -name '*.mbt' \| xargs wc -l`；`moon test --target wasm-gc` | ✅ |
+| 1 | **MoonBit 为主** | 16,051 行 MoonBit 源码（`core/` 14,260 + `runtime/` 1,218 + `cmd/` 548），8 个 `_wbtest.mbt` 共 167 个白盒用例；CLI、解码器、分析器、代码生成器、调用计划全部用 MoonBit 写；生成物也是 MoonBit 包 | `find core runtime cmd -name '*.mbt' \| xargs wc -l`；`moon test --target wasm-gc` | ✅ |
 | 2 | **仓库公开** | 已公开：`https://github.com/wuhaiting321/moonlift`（PUBLIC，默认分支 `master`）；全部提交的作者与提交者统一为 `wuhaiting321 <19177746962@163.com>` | `gh repo view wuhaiting321/moonlift --json visibility,defaultBranchRef` | ✅ |
 | 3 | **能够运行** | `info` / `disasm` / `decompile` / `verify` 四个子命令在 `wasm-gc`、`js`、`wasm` 三端输出逐字节一致；生成包 `moon check` 零错误零告警；GitHub Actions 在每次推送时复跑同一套门禁并全部通过 | `bash script/check.sh`（cross-target 段）；`bash script/demo.sh`；仓库页 Actions 标签 | ✅ |
-| 4 | **工作有效** | 44 个模块全部反编译成可编译包；498 个调用与 Node 跑原件的值逐一比对，498 匹配、0 失败；150 个间接调用用例值/陷阱对拍；5 条共享导入属性；31 个真实编译器产物端到端通过 | `bash script/verify.sh`；`bash script/extended.sh` | ✅ |
-| 5 | **开源合规** | Apache-2.0（`LICENSE`）；`NOTICE` 标注格式与算法参考来源；`corpus/PROVENANCE.md` 说明 44 个 `.wasm` 的来源、许可证与 SHA-256（`corpus/good/SHA256SUMS`、`corpus/extended/SHA256SUMS`）；所有夹具均为自制或 MoonBit 编译器产出，无第三方二进制 | `cat NOTICE`；`cat corpus/PROVENANCE.md` | ✅ |
+| 4 | **工作有效** | 46 个模块全部反编译成可编译包；521 个调用与 Node 跑原件的值逐一比对，521 匹配、0 失败；150 个间接调用用例值/陷阱对拍；5 条共享导入属性；31 个真实编译器产物端到端通过 | `bash script/verify.sh`；`bash script/extended.sh` | ✅ |
+| 5 | **开源合规** | Apache-2.0（`LICENSE`）；`NOTICE` 标注格式与算法参考来源；`corpus/PROVENANCE.md` 说明 46 个 `.wasm` 的来源、许可证与 SHA-256（`corpus/good/SHA256SUMS`、`corpus/extended/SHA256SUMS`）；所有夹具均为自制或 MoonBit 编译器产出，无第三方二进制 | `cat NOTICE`；`cat corpus/PROVENANCE.md` | ✅ |
 | 6 | **AI 可解释** | `docs/AI_USAGE.md` 逐项说明 AI 参与了什么、人做了什么决策、每个 AI 产出如何被独立验证；`docs/DESIGN.md` 记录每个关键取舍及被否方案；`PLAN.md` 保留实测基线与计划偏差 | `cat docs/AI_USAGE.md` | ✅ |
 
 ## 2. 官方评分 4×25 的证据落点
 
 | 维度 | 主要证据 | 为什么算得上 |
 |---|---|---|
-| **工程深度与实现强度** | 8 层流水线（reader → section → instr → cfg → stack → struct → emit → runtime）；15,671 行 MoonBit；162 单测；25 步门禁 | 每一层都是独立模块 + 独立测试，不是把 wasm 打印成文本了事 |
+| **工程深度与实现强度** | 8 层流水线（reader → section → instr → cfg → stack → struct → emit → runtime）；16,051 行 MoonBit；167 单测；26 步门禁 | 每一层都是独立模块 + 独立测试，不是把 wasm 打印成文本了事 |
 | **技术贡献与攻关** | 构造树结构化 + `brk` 逐层解绕（`docs/DESIGN.md` §3.2/3.3）；`call_indirect` 的"表 + 每签名一个 dispatcher"（`docs/INDIRECT_CALL.md`）；导入绑定与别名保持（`docs/SHARING.md`）；边值在前驱写入（D12）；三类重排隐患的强制溢出；位级浮点 helper | 解决的都是"能编译但算错"的问题，附被否方案与实测依据 |
 | **生态增量** | mooncakes.io 全量 3,882 模块检索 `decompiler`/`wasm2mbt`/`wasm2c` 命中 0；GitHub `moonbit+decompiler` `total_count = 0`；产出是三端可用的**迁移通道**而非又一个解析库 | 检索结论按"可检索范围内未发现直接重复实现"表述，不声称 100% 无人做过 |
-| **开发与验证能力** | wabt 逐指令对拍 4,585/4,585；差分验证 498/498；间接调用 150 用例双向对拍；三端逐字节一致；31 个真实编译器产物；每个数字都被门禁钉住 | 判据是"与独立实现对比"，不是"自己跑通" |
+| **开发与验证能力** | wabt 逐指令对拍 4,593/4,593；差分验证 521/521；间接调用 150 用例双向对拍；三端逐字节一致；31 个真实编译器产物；每个数字都被门禁钉住 | 判据是"与独立实现对比"，不是"自己跑通" |
 
 ## 3. MVP 契约 M1–M5（PLAN.md §3）逐条结算
 
 | 编号 | 原判据 | 实际结果 | 说明 |
 |---|---|---|---|
-| **M1** | `info` 对语料 100% 不 panic；非法输入 100% 返回 `E0xx` + 字节偏移 | **63/63**（44 个良构 + 19 个畸形）全部按预期处理；畸形样本按文件名报出错误码与偏移 | ✅ 达成 |
-| **M2** | ≥95% 模块生成物 `moon check` 零报错 | **44/44 = 100%**，且**零告警**（12 个自制夹具 + 1 个 20 KB 主产物 + 31 个编译器产物） | ✅ 超出（把告警也纳入判据） |
-| **M3** | 导出函数随机输入差分，case 通过率 ≥99%，trap 也算可比较观测值 | **498 个可比较调用 498 匹配、0 失败**；另有 237 个调用因原件 trap / NaN **被跳过并单列**；间接调用的三类陷阱由 `script/indirect.sh` 单独对拍（150 用例） | ⚠️ **有意收缩**：见 BOUNDARY §4.19。MoonBit 的 `trap` 是 abort 不是可捕获错误，无法在生成测试里观测；浮点按精确位比较、不放宽到 1 ULP；未比对调用后的线性内存哈希。这三项都写进边界而不是藏在"100% 通过"里 |
+| **M1** | `info` 对语料 100% 不 panic；非法输入 100% 返回 `E0xx` + 字节偏移 | **65/65**（46 个良构 + 19 个畸形）全部按预期处理；畸形样本按文件名报出错误码与偏移 | ✅ 达成 |
+| **M2** | ≥95% 模块生成物 `moon check` 零报错 | **46/46 = 100%**，且**零告警**（14 个自制夹具 + 1 个 20 KB 主产物 + 31 个编译器产物） | ✅ 超出（把告警也纳入判据） |
+| **M3** | 导出函数随机输入差分，case 通过率 ≥99%，trap 也算可比较观测值 | **521 个可比较调用 521 匹配、0 失败**；另有 243 个调用因原件 trap / NaN **被跳过并单列**；间接调用的三类陷阱由 `script/indirect.sh` 单独对拍（150 用例） | ⚠️ **有意收缩**：见 BOUNDARY §4.19。MoonBit 的 `trap` 是 abort 不是可捕获错误，无法在生成测试里观测；浮点按精确位比较、不放宽到 1 ULP；未比对调用后的线性内存哈希。这三项都写进边界而不是藏在"100% 通过"里 |
 | **M4** | 生成代码在 `wasm` / `wasm-gc` / `js` 三端实跑，结果逐位一致；某端编译不过要记录跳过原因 | `info`、`--ops`、`--cfg`、`--stack`、`--struct`、`calls.tsv` 在**三端逐字节一致**；项目自身单测在 `wasm-gc` 与 `js` 双端通过；生成包的 `moon check` 在三端通过，行为测试在 `wasm-gc` 实跑 | ⚠️ **部分达成**：三端一致性的证据是 CLI 分析输出与编译，生成包的**行为**测试只在 `wasm-gc` 跑（js/wasm 未跑行为测试）。native 后端因本机缺 MSVC 未验证，已在 BOUNDARY §4.2 记录原因 |
 | **M5** | `bash script/demo.sh` 从零跑完 info→decompile→verify 并打印指标表 | 已实现：`bash script/demo.sh` 五步演示 + 实时测量指标表；完整门禁是 `bash script/check.sh` | ✅ 达成 |
 
@@ -82,12 +82,27 @@ origin  https://github.com/wuhaiting321/moonlift.git (push)
 | P0-3 | 全部段挪到 `moonlift_init()` 铺到当前绑定实例，且每个实例只铺一次（`__ml_pending`） | "先 bind 不 init 读到 0；bind 后 init 读到 97"；`memory.wasm` 49 调用回到 49/49 |
 | P0-4 | 评审索要的"绑定方式 + 迁移前后行为"成文，含同一可变全局导入两次的六行对照 | `docs/SHARING.md` §1–§5；`docs/IMPORTS.md` 重写 |
 
-数字变化：差分 481 → **498**；对拍 4,575 → **4,585**；语料 43 → **44**；源码 15,323 → **15,671**。
+数字变化：差分 481 → **498**；对拍 4,575 → **4,593**；语料 43 → **44**；源码 15,323 → **16,051**。
 
 整改中被门禁抓到并修掉的两个真 bug：
 
 1. 常量段偏移被 `const_of_global` 当成 0（只处理了 `global.get`）——`memory.wasm` 49 个调用一起错，是差分从 481 掉到 425 露出来的。
 2. 段移到 init 后，`moonlift_init()` 每次调用都重铺，把模块写过的内存盖回段的初始值——`floats(7)` 一个值错，是单条 `expect` 失败露出来的。修法是"每个实例只实例化一次"。
+
+## 4.3 第三轮：跨模块共享（2026-11-25，已完成）
+
+第二封意见要求"覆盖共享实例的必要语义"。同一模块内的两次导入由 §4.2 解决；这一层是**两个模块**之间的：
+
+| 块 | 内容 | 证据 |
+|---|---|---|
+| 合包 | `decompile a.wasm b.wasm -o pkg`：每个模块一组 `m{i}_` 前缀（类型 `M{i}_`），各带一张绑定记录，一个 `moonlift_init_all()` | `script/merge.sh` 第 1–4 条；`core/emit_wbtest.mbt` 5 个单测 |
+| 共享 | 宿主把同一个 `Memory` 交给两个模块：A 的 data 段在 B 可见、A 的 `store` 在 B 可读、A 的 `grow` 改 B 的 `size` | `merge: one memory, four properties` → 4/4 |
+| 反面对照 | 绑两个不同的 `Memory`：A `grow(2)` 之后 B 仍是 1 页 —— 共享是宿主的选择，不是合包的副作用 | 同一测试文件第 4 条 |
+| 单模块不变 | 未合并时输出与引入前缀前**逐字节相同**，所以 §1–§3 的所有数字不受影响 | `emit_package_multi([m])` 断言无 `m0_`；门禁 46 个生成包 |
+
+数字变化：差分 498 → **521**；对拍 4,585 → **4,593**；语料 44 → **46**；源码 15,671 → **16,051**；单测 162 → **167**。
+
+门禁在这一轮抓到的一个真 bug：加前缀时把元素段写表那一行从"函数索引"改成了"函数名"，`table` / `indirect` / `imported` / `moonbit_fib` 四个夹具的生成包立刻编译失败（`t[at0 + 0] = f1` 是函数，不是 `Int`）。表里存的是索引，dispatcher 才拿它去调名字——这一点被四个夹具同时撞出来，不是靠读代码。
 
 ## 5. 三分钟复现路径（评委视角）
 
@@ -95,7 +110,7 @@ origin  https://github.com/wuhaiting321/moonlift.git (push)
 git clone https://github.com/wuhaiting321/moonlift && cd moonlift
 bash script/demo.sh        # info → struct-stats → decompile → moon check → verify → 指标表
 bash script/check.sh       # 完整门禁，ALL GREEN
-cat BOUNDARY.md            # 支持矩阵 / 14 条语义偏差 / 19 条已知限制
+cat BOUNDARY.md            # 支持矩阵 / 15 条语义偏差 / 19 条已知限制
 cat docs/ACCEPTANCE.md     # 本表
 cat README.md             # 项目申报书（见 README 顶部）
 ```

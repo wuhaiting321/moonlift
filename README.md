@@ -20,6 +20,9 @@
 > **②** 记录按 `(module, name)` **去重**，别名由类型保证，不再是承诺；**③** 全部段（含常量段）挪到 `moonlift_init()` 里铺到当前绑定实例，且每个实例只铺一次；
 > **④** 新增 `alias.wasm` 夹具与 `script/sharing.sh`，把"写 `$a` 读 `$b`"钉成 5 条可执行属性。
 > 评审索要的"绑定方式 + 迁移前后行为"见 [docs/SHARING.md](docs/SHARING.md)；四类导入的接入步骤见 [docs/IMPORTS.md](docs/IMPORTS.md)。
+> **⑤ 跨模块共享实例也做了**：`moonlift decompile a.wasm b.wasm -o pkg` 把多个模块反编译进同一个包（`m0_` / `m1_` 前缀，
+> 每个模块一张绑定记录，`moonlift_init_all()` 统一实例化），于是"同一内存交给两个模块，A `grow` 之后 B 的 `size` 变大"
+> 从一句承诺变成 4 条可执行断言。见 [docs/MERGE.md](docs/MERGE.md) 与 `bash script/merge.sh`。
 
 ## 一、基本信息
 
@@ -38,7 +41,7 @@ MoonBit 的 `wasm-gc` / `js` 后端无法链接 C FFI，大量存量 C/Rust 生�
 
 moonlift 读取一个符合 **WebAssembly Core 1.0** 的 `.wasm` 文件，依次完成：字节读取 → 12 个段 → 172 条 MVP 指令 → 基本块 / 控制流图 → 类型化栈模拟与表达式重建 → 构造树结构化 → MoonBit 代码生成 → 差分验证，最终写出一个 6 文件的 MoonBit 包，`moon build` 直接可编译。1.0 的语义承诺逐条落地，包括**间接调用 `call_indirect`**（C 函数指针、C++ 虚表、Rust `dyn`、解释器分派循环的唯一编译形态）与**四类导入**。
 
-正确性不靠自证：解码器与 wabt 逐指令对拍 **4,585 / 4,585 一致**；44 个模块的生成包全部 `moon check` **零错误且零告警**；**498 个调用**在生成代码与 Node 跑原始 wasm 之间逐一比对，**498 匹配、0 失败**；另有 **150 个间接调用用例**值与陷阱双向对拍；20 KB 真实编译器产物 **400 / 400 可达块**各产出一次。一键门禁 `bash script/check.sh` → `ALL GREEN`。
+正确性不靠自证：解码器与 wabt 逐指令对拍 **4,593 / 4,593 一致**；46 个模块的生成包全部 `moon check` **零错误且零告警**；**521 个调用**在生成代码与 Node 跑原始 wasm 之间逐一比对，**521 匹配、0 失败**；另有 **150 个间接调用用例**值与陷阱双向对拍；20 KB 真实编译器产物 **400 / 400 可达块**各产出一次。一键门禁 `bash script/check.sh` → `ALL GREEN`。
 
 ## 三、项目方向与通用性说明
 
@@ -57,9 +60,9 @@ moonlift 读取一个符合 **WebAssembly Core 1.0** 的 `.wasm` 文件，依次
 | # | 1.0 的要求 | 状态 | 证据 |
 |---|---|---|---|
 | 1 | 二进制格式：LEB128、UTF-8 名、段序与段号 | ✅ | 19 个畸形样本按**错误码 + 绝对字节偏移**拒绝 |
-| 2 | 12 个段：type / import / function / table / memory / global / export / start / element / code / data / datacount（含自定义段） | ✅ | `info` 在 44 个模块上输出段表与偏移 |
+| 2 | 12 个段：type / import / function / table / memory / global / export / start / element / code / data / datacount（含自定义段） | ✅ | `info` 在 46 个模块上输出段表与偏移 |
 | 3 | 4 种值类型、functype；1.0 限 0 或 1 个结果 | ✅ | 多结果签名报 `E112`（逐函数拒绝并留桩） |
-| 4 | **172 条指令**（控制、参数、变量、内存、数值、符号扩展、`0xFC` 子集） | ✅ **172 / 172** | 与 wabt 逐指令对拍 **4,585 / 4,585 一致，0 不符**（62 条 SIMD 按设计不尝试） |
+| 4 | **172 条指令**（控制、参数、变量、内存、数值、符号扩展、`0xFC` 子集） | ✅ **172 / 172** | 与 wabt 逐指令对拍 **4,593 / 4,593 一致，0 不符**（62 条 SIMD 按设计不尝试） |
 | 5 | 控制流：`block` / `loop` / `if` / `br` / `br_if` / `br_table` / `return` / **`call`** / **`call_indirect`** | ✅ | 400 / 400 可达块各产出一次；`call_indirect` 见第 6 行 |
 | 6 | **间接调用**：0 或 1 张 `funcref` 表、active `elem` 段、运行期索引、结构等价签名检查 | ✅ | `table.wasm` 6 生成 / 0 拒绝；`indirect.wasm` 12 / 0；**150 个间接调用用例**值比值、陷阱比陷阱，0 失败 |
 | 7 | 0 或 1 个线性内存 + data 段 | ✅ | `memory.wasm`、`imported.wasm` |
@@ -70,6 +73,7 @@ moonlift 读取一个符合 **WebAssembly Core 1.0** 的 `.wasm` 文件，依次
 | 12 | `start` 段 | ✅ | 生成 `moonlift_init()`，与段铺设一起，每个实例执行一次 |
 | 13 | 陷阱语义：越界、除零、`unreachable`、间接调用三类（越界 / 空槽 / 签名不符） | ✅ | 陷阱对拍 + 消息里点名 `call_indirect` |
 | 14 | 段偏移允许 `global.get`（仅导入的不可变全局），且段铺在实例上 | ✅ | 全部段在 `moonlift_init()` 里铺到当前绑定实例；可变 / 自定义全局报 `E012` |
+| 15 | **两个模块导入同一个实例**：`A` 的 `memory.grow` 对 `B` 的 `memory.size` 可见 | ✅ 合并进一个包 | `decompile a.wasm b.wasm -o pkg`：`m0_grow(1)` 后 `m1_pages()` 从 1 变 2；绑两个实例则 `m1` 仍为 1。`script/merge.sh` 5 条属性。见 [docs/MERGE.md](docs/MERGE.md) |
 
 **1.0 之外**（不在承诺范围，逐条报稳定错误码 + 偏移 + trap 桩）：SIMD `E102`、线程 / 原子 `E103`、GC / 引用类型 `E101`、多值 `E112`、批量内存指令生成 `E109`、尾调用 `E105`、异常 `E104`、多内存 / 多表 / memory64 `E106`。
 
@@ -108,18 +112,19 @@ moonlift 读取一个符合 **WebAssembly Core 1.0** 的 `.wasm` 文件，依次
 
 | # | 核心功能 | 实现状态 | 验证方式 |
 |---|---|---|---|
-| 1 | **模块解析 `info`**：12 个段（type / import / function / table / memory / global / export / start / element / code / data / datacount），段顺序按规范等级校验；导入段接受**四类** | 已实现 | 44 个良构模块 + 19 个畸形样本全部按预期处理 |
-| 2 | **指令解码 `disasm`**：172 条 MVP 指令、29 种指令形态，`.wat` 风格列出；未知操作数长度的前缀（SIMD / 原子）停止并标记 partial body | 已实现 | 与 wabt 独立对拍 **4,585 / 4,585 一致，0 不符** |
+| 1 | **模块解析 `info`**：12 个段（type / import / function / table / memory / global / export / start / element / code / data / datacount），段顺序按规范等级校验；导入段接受**四类** | 已实现 | 46 个良构模块 + 19 个畸形样本全部按预期处理 |
+| 2 | **指令解码 `disasm`**：172 条 MVP 指令、29 种指令形态，`.wat` 风格列出；未知操作数长度的前缀（SIMD / 原子）停止并标记 partial body | 已实现 | 与 wabt 独立对拍 **4,593 / 4,593 一致，0 不符** |
 | 3 | **控制流分析 `--cfg`**：基本块、边、支配树、自然循环、Hecht–Ullman 可归约判定；不可达块保留并标记 | 已实现 | 每个夹具 / 真实产物全部输出，78 / 78 完整函数可归约 |
 | 4 | **类型化栈模拟与表达式重建 `--stack`**：逐块模拟操作数栈、恢复表达式树，同遍完成类型检查；三类重排隐患强制溢出 | 已实现 | 真实产物 75 个主体、115 次溢出（114 强制 + 1 隐患） |
 | 5 | **结构化控制流 `--struct`**：走 wasm 自带构造树，`block`→一次性 `while true`、`loop`→真循环、跨层 `br`→`brk` 逐层解绕、`br_table`→`match` | 已实现 | `blocks emitted 400 / 400`；输出中无裸 `br` / `br_if` / `br_table` / `if (...)` |
 | 6 | **间接调用 `call_indirect`**：函数表 + 每个签名一个 dispatcher，签名等价按结构比较；越界 / 空槽 / 签名不符三类陷阱与原件一致 | 已实现 | `table.wasm` **6 生成 / 0 拒绝**；`indirect.wasm` **12 / 0**；**150 个用例**值比值、陷阱比陷阱 |
 | 7 | **四类导入的绑定**：`MoonliftExterns` 按 `(module, name)` 去重，`moonlift_bind()` 交实例，`moonlift_init()` 把段铺到绑定的实例上；函数导入生成 trap 桩 | 已实现 | `imported.wasm` **8 生成 / 0 拒绝**，绑定 `base=4` 后五个导出与原件逐值一致；不预填任何字节 |
 | 8 | **共享实例与别名**：同一可变全局导入两次只有一个字段，写 `$a` 读 `$b` 可见；`moonlift_init()` 每个实例只执行一次 | 已实现 | `alias.wasm` **4 生成 / 0 拒绝**；`script/sharing.sh` 5 条属性、`verify.sh` 17 个调用 |
-| 9 | **MoonBit 代码生成 `decompile`**：写出 `moon.mod` / `moon.pkg` / `module.mbt` / `funcs.mbt` / `exports.mbt` / `runtime.mbt` 六文件包；拒绝的函数生成真实签名 + trap 桩 | 已实现 | 44 / 44 生成包 `moon check` 零错误零告警；真实产物 79 个函数定义（75 主体 + 4 桩） |
-| 10 | **差分验证 `verify`**：生成调用计划 `calls.tsv`（含宿主要求），由 Node 跑原始模块出答案，再在生成包内生成 `inspect` 测试并运行比对 | 已实现 | **498 个调用、498 匹配、0 失败**；237 个 trap / NaN 跳过并单列 |
-| 11 | **三端一致与一键门禁**：`wasm-gc` / `js` / `wasm` 全量对照；格式、编译、单测、语料、反编译、差分、间接调用、扩展语料一条命令跑完 | 已实现 | `bash script/check.sh` → `ALL GREEN`，离线 |
-| 12 | **语料与溯源**：44 个 `.wasm`（12 个自制夹具 + 1 个 20 KB 主产物 + 31 个 MoonBit 编译器真实产物），逐文件 SHA-256 + 来源说明 | 已实现 | `corpus/good/SHA256SUMS`、`corpus/extended/SHA256SUMS`、`corpus/PROVENANCE.md` |
+| 9 | **多模块合包 `decompile a.wasm b.wasm`**：每个模块一组 `m{i}_` 前缀（类型用 `M{i}_`），各带一张绑定记录，`moonlift_init_all()` 统一实例化；一个包里只有一份 `runtime.mbt`，所以 `Memory` 只有一个类型 | 已实现 | `script/merge.sh` 5 条属性：`shared_a` 的段与写在 `shared_b` 里可见、`grow` 在 A 侧改的是 B 侧 `size`、绑两个实例则互不影响 |
+| 10 | **MoonBit 代码生成 `decompile`**：写出 `moon.mod` / `moon.pkg` / `module.mbt` / `funcs.mbt` / `exports.mbt` / `runtime.mbt` 六文件包；拒绝的函数生成真实签名 + trap 桩 | 已实现 | 46 / 46 生成包 `moon check` 零错误零告警；真实产物 79 个函数定义（75 主体 + 4 桩） |
+| 11 | **差分验证 `verify`**：生成调用计划 `calls.tsv`（含宿主要求），由 Node 跑原始模块出答案，再在生成包内生成 `inspect` 测试并运行比对 | 已实现 | **521 个调用、521 匹配、0 失败**；243 个 trap / NaN 跳过并单列 |
+| 12 | **三端一致与一键门禁**：`wasm-gc` / `js` / `wasm` 全量对照；格式、编译、单测、语料、反编译、差分、间接调用、扩展语料一条命令跑完 | 已实现 | `bash script/check.sh` → `ALL GREEN`，离线 |
+| 13 | **语料与溯源**：46 个 `.wasm`（14 个自制夹具 + 1 个 20 KB 主产物 + 31 个 MoonBit 编译器真实产物），逐文件 SHA-256 + 来源说明 | 已实现 | `corpus/good/SHA256SUMS`、`corpus/extended/SHA256SUMS`、`corpus/PROVENANCE.md` |
 
 ## 六、是否为原创项目、移植项目或参考已有开源项目
 
@@ -144,9 +149,9 @@ moonlift 读取一个符合 **WebAssembly Core 1.0** 的 `.wasm` 文件，依次
 
 - **本项目许可证：Apache-2.0**（见 `LICENSE`）。
 - 第三方归属逐项标注于 `NOTICE`；语料来源、许可证与 SHA-256 见 `corpus/PROVENANCE.md`。
-- 44 个 `.wasm` 全部自制或由 MoonBit 编译器产出，**无第三方二进制**。
+- 46 个 `.wasm` 全部自制或由 MoonBit 编译器产出，**无第三方二进制**。
 
-## 八、完成情况（实测于 2026-11-23）
+## 八、完成情况（实测于 2026-11-25）
 
 以下指标均可在仓库内自行复现，验收要求的达成情况以实际仓库内容为准。
 
@@ -154,11 +159,12 @@ moonlift 读取一个符合 **WebAssembly Core 1.0** 的 `.wasm` 文件，依次
 
 | 指标 | 结果 |
 |---|---|
-| MoonBit 源码（要求 ≥500 行） | **15,671** 行（生产 13,048 + 测试 2,623） |
-| 白盒单测 | **162 / 162**，`wasm-gc` 与 `js` 双端通过 |
-| 语料 | **43** 个模块（11 自制 + 32 真实编译器产物）+ **19** 个畸形样本按码 + 偏移全部按预期拒绝 |
-| 与独立实现一致 | wabt 逐指令 **4,585 / 4,585**；Node 跑原件差分 **498 / 498**；间接调用值 / 陷阱 **150 个用例 0 失败**；三端分析输出逐字节一致 |
-| 生成物质量 | **44 / 44** 生成包 `moon check` 零错误零告警；20 KB 真实产物 **400 / 400** 可达块各产出一次 |
+| MoonBit 源码（要求 ≥500 行） | **16,051** 行（生产 13,305 + 测试 2,746） |
+| 白盒单测 | **167 / 167**，`wasm-gc` 与 `js` 双端通过 |
+| 语料 | **46** 个模块（14 个自制夹具 + 1 个 20 KB 主产物 + 31 个真实编译器产物）+ **19** 个畸形样本按码 + 偏移全部按预期拒绝 |
+| 与独立实现一致 | wabt 逐指令 **4,593 / 4,593**；Node 跑原件差分 **521 / 521**；间接调用值 / 陷阱 **150 个用例 0 失败**；三端分析输出逐字节一致 |
+| 生成物质量 | **46 / 46** 生成包 `moon check` 零错误零告警；20 KB 真实产物 **400 / 400** 可达块各产出一次 |
+| 跨模块共享 | 合并包 **4 条断言**全过（A `grow` → B `size`）；拆成两个包时同一操作为 1 页不变 |
 | 一键门禁 | `bash script/check.sh` → **ALL GREEN**（离线，上列各项全部在其中） |
 
 复现命令与逐项明细见 [docs/ACCEPTANCE.md](docs/ACCEPTANCE.md) §1–§3；此处只列结论。
@@ -170,13 +176,14 @@ moonlift 读取一个符合 **WebAssembly Core 1.0** 的 `.wasm` 文件，依次
 | 1 | `native` 后端未验证 | 本机无 MSVC，`--target llvm` 缺 `prelude.mi`；记录于 `BOUNDARY.md` §4.2，含安装命令 |
 | 2 | M3 有意收缩 | trap / NaN **跳过单列而非算通过**（MoonBit `trap` 是 abort，不可捕获）；浮点按精确位比较、不放宽 1 ULP；未比对调用后线性内存哈希；参数为固定对角序列而非随机 |
 | 3 | M4 部分达成 | 生成包的**行为**测试只在 `wasm-gc` 实跑；三端一致性证据是分析输出与编译 |
-| 4 | 3 个性能指标未产出 | 吞吐 KB/s、代码膨胀比、执行性能比——正确性判据是"与独立实现一致"，时间投给了 44 模块与 498 次差分，理由见 `PLAN.md` §7 |
+| 4 | 3 个性能指标未产出 | 吞吐 KB/s、代码膨胀比、执行性能比——正确性判据是"与独立实现一致"，时间投给了 46 模块与 521 次差分，理由见 `PLAN.md` §7 |
 | 5 | 1.0 之外的特性明确拒绝 | SIMD `E102`、线程 / 原子 `E103`、GC / 引用类型 `E101`、多值 `E112`、批量内存指令生成 `E109`、尾调用 `E105`、异常 `E104`、多内存 / 多表 / memory64 `E106`；逐个报码 + 绝对偏移 + trap 桩 |
 | 6 | 函数导入只能由人接管 | 生成的 `h{i}` 签名真实、函数体 `trap`：宿主函数的行为不在二进制里，猜就是伪造。见 [docs/IMPORTS.md](docs/IMPORTS.md) §1 |
-| 7 | 跨包共享需合并进同一个包 | 每个生成包自带 `runtime.mbt`，`pkg_a.Memory` 与 `pkg_b.Memory` 是两个类型，宿主无法把同一个实例交给两个包；同模块内的别名（含同名导入两次）已完整支持。见 [docs/SHARING.md](docs/SHARING.md) §6 |
-| 8 | 生成代码是 witness 而非漂亮源码 | 一次性循环、`brk` 变量、`// b3` 注释——定位是"可归因、可审计、可继续开发" |
+| 7 | 分开的两个包之间不能共享实例 | 每个生成包自带 `runtime.mbt`，`pkg_a.Memory` 与 `pkg_b.Memory` 是两个类型；要共享就**合并进一个包**（`decompile a.wasm b.wasm`，已实现并对拍），不合并则各自一份内存。见 [docs/MERGE.md](docs/MERGE.md) |
+| 8 | 合并包里 `start` 的执行顺序由命令行决定 | `moonlift_init_all()` 按输入顺序调用；若两个模块的 `start` 通过导入全局互相依赖，顺序由人负责，不做拓扑排序 |
+| 9 | 生成代码是 witness 而非漂亮源码 | 一次性循环、`brk` 变量、`// b3` 注释——定位是"可归因、可审计、可继续开发" |
 
-**审查中确认的、由门禁真实抓到并修复的问题**（说明验证不是摆设）：条件 `return` 被吞成无条件、块入口值未绑定、`br_table` 载荷读未写临时量、`Memory::grow` / `check` 32 位溢出、`start` 段语义缺失、整数字面量作方法接收者、只写不读局部命名不一致、多返回值被静默丢弃；整改期间又抓到差分脚本用前缀匹配过滤指令行（`hostcall` 被当成 `host` 行丢掉），是"对比数少了 16 个"暴露出来的。第二轮整改抓到的两个：常量段偏移被 `const_of_global` 当成了 0（`memory.wasm` 的 49 个调用一起错），段从"包加载时铺"挪到"实例化时铺"之后 `moonlift_init()` 每次调用都重铺、把模块写过的内存盖回去（`floats(7)` 错）。两条都由门禁的数字变化露出来，没有一条是靠读代码发现的。
+**审查中确认的、由门禁真实抓到并修复的问题**（说明验证不是摆设）：条件 `return` 被吞成无条件、块入口值未绑定、`br_table` 载荷读未写临时量、`Memory::grow` / `check` 32 位溢出、`start` 段语义缺失、整数字面量作方法接收者、只写不读局部命名不一致、多返回值被静默丢弃；整改期间又抓到差分脚本用前缀匹配过滤指令行（`hostcall` 被当成 `host` 行丢掉），是"对比数少了 16 个"暴露出来的。第二轮整改抓到的两个：常量段偏移被 `const_of_global` 当成了 0（`memory.wasm` 的 49 个调用一起错），段从"包加载时铺"挪到"实例化时铺"之后 `moonlift_init()` 每次调用都重铺、把模块写过的内存盖回去（`floats(7)` 错）。两条都由门禁的数字变化露出来，没有一条是靠读代码发现的。第三轮（多模块合包）抓到的一个：加前缀时把元素段写表的那行从"函数索引"改成了"函数名"，四个夹具的生成包立刻编译不过——`t[at0 + 0] = f1` 是函数不是 `Int`。
 
 ## 附录：技术架构与关键决策
 
@@ -195,7 +202,7 @@ moonlift 读取一个符合 **WebAssembly Core 1.0** 的 `.wasm` 文件，依次
 9. **`start` → `moonlift_init()`**：MoonBit 包没有实例化步骤，由宿主显式调用。
 10. **浮点与 trap 是"观测"不是"值"**：trap / NaN 跳过并单列，绝不冒充通过。
 
-更多文档：[BOUNDARY.md](BOUNDARY.md)（支持矩阵、14 条语义偏差、19 条已知限制）、[docs/DESIGN.md](docs/DESIGN.md)、[docs/INDIRECT_CALL.md](docs/INDIRECT_CALL.md)（间接调用：表布局、生成的代码、迁移前后行为）、[docs/IMPORTS.md](docs/IMPORTS.md)（四类导入与宿主接入步骤）、[docs/SHARING.md](docs/SHARING.md)（绑定、共享实例、同一全局导入两次的前后对照）、[docs/ACCEPTANCE.md](docs/ACCEPTANCE.md)、[docs/AI_USAGE.md](docs/AI_USAGE.md)、[corpus/PROVENANCE.md](corpus/PROVENANCE.md)。
+更多文档：[BOUNDARY.md](BOUNDARY.md)（支持矩阵、15 条语义偏差、19 条已知限制）、[docs/DESIGN.md](docs/DESIGN.md)、[docs/INDIRECT_CALL.md](docs/INDIRECT_CALL.md)（间接调用：表布局、生成的代码、迁移前后行为）、[docs/IMPORTS.md](docs/IMPORTS.md)（四类导入与宿主接入步骤）、[docs/SHARING.md](docs/SHARING.md)（绑定、共享实例、同一全局导入两次的前后对照）、[docs/MERGE.md](docs/MERGE.md)（多模块合包：前缀规则、生成代码、跨模块共享内存的前后对照）、[docs/ACCEPTANCE.md](docs/ACCEPTANCE.md)、[docs/AI_USAGE.md](docs/AI_USAGE.md)、[corpus/PROVENANCE.md](corpus/PROVENANCE.md)。
 
 ## License
 

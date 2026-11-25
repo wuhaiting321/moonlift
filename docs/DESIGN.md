@@ -131,7 +131,21 @@ it, `globals.wasm`'s `f4()` returns 0 where the original returns 1 — a bug tha
 
 Integers compare as decimal text, floats as **signed bit patterns**. A call whose original traps,
 or returns a NaN, is *skipped* and counted in its own column — a skipped call is not a pass. This
-is why the report prints 498 compared / 498 matched / 237 skipped rather than a single percentage.
+is why the report prints 521 compared / 521 matched / 243 skipped rather than a single percentage.
+
+### 3.11 Sharing an instance means sharing a package
+
+Two modules that import one `Memory` must see each other's `grow`. Generated packages each copy
+`runtime.mbt`, so `pkg_a.Memory` and `pkg_b.Memory` are different types and no host can hand one value
+to both — the failure is a wrong answer (each module grows a private memory), not a compile error.
+
+The fix is not a new instance type but a different packaging: `moonlift decompile a.wasm b.wasm -o pkg`
+emits both modules into one package. One `runtime.mbt` means one `Memory`; one namespace forces a
+`m0_` / `m1_` prefix on every top-level name (and `M0_` / `M1_` on the one type, because MoonBit type
+names start upper-case); one `moonlift_bind()` per module keeps the records separate, so the host
+decides which instances are shared; one `moonlift_init_all()` instantiates them in the order given.
+The rejected alternative was a shared `moonlift_runtime` package, which would make every generated
+package non-zero-dependency — and "the output depends on nothing" is a property this project tests.
 
 ## 4. Why verification is split three ways
 

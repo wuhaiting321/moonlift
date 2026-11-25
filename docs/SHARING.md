@@ -161,7 +161,9 @@ sharing: 5 ok, 0 failed
 
 正确做法是**把多个模块反编译进同一个包**：一份 `runtime.mbt`，一张 `MoonliftExterns`，两个模块的前缀 (`m1_` / `m2_`) 分开命名，`(module, name)` 相同的导入在记录里合并成一个字段。
 
-> 状态：这一层（`decompile a.wasm b.wasm -o pkg/`）在本次整改中实现，验收是"`m1.grow()` 之后 `m2.size()` 变大"的一个可执行用例；在此之前，跨包共享写进 `BOUNDARY.md`，不假装支持。
+> 状态：**已实现**。`moonlift decompile a.wasm b.wasm -o pkg` 把两个模块放进一个包（`m0_` / `m1_` 前缀，各一张绑定记录，`moonlift_init_all()` 统一实例化），宿主把同一个 `Memory` 交给两边之后，"A `grow`、B `size` 变大"是 4 条可执行断言，由 `bash script/merge.sh` 钉住。
+>
+> 完整说明（前缀规则、生成的代码、迁移前后行为表、仍未自动化的部分）见 [MERGE.md](MERGE.md)。仍然不支持的只有"两个**分开的**包之间共享实例"——那需要一个共享的运行时包，生成包目前是零依赖的。
 
 ## 7. 仍然需要人做的
 
