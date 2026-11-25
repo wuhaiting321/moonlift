@@ -346,28 +346,34 @@ pub fn plan_calls(
     calls,
     skipped,
     has_start: m.has_start,
-    needs_init: m.has_start || has_deferred_segment(m),
+    needs_init: m.has_start || needs_instantiation(m),
     host: host_imports(m),
   }
 }
 
 ///|
-/// Whether any segment is placed at a `global.get`. The emitter moves exactly
-/// those into `moonlift_init()`, so the harness has to call it or the memory and
-/// the table stay empty.
-fn has_deferred_segment(m : Module) -> Bool {
-  let mut any = false
+/// Whether `moonlift_init()` has work to do.
+///
+/// Every segment counts now, not just the ones placed at a `global.get`: the
+/// emitter lays them all into whatever instance is bound when init runs, because
+/// an imported memory or table does not exist before `moonlift_bind()`. A module
+/// with a defined memory and a constant segment therefore also needs init — the
+/// package no longer copies bytes at load time.
+fn needs_instantiation(m : Module) -> Bool {
   for d in m.datas {
-    if d.bytes.length() > 0 && !offset_is_const(d.offset) {
-      any = true
+    if d.bytes.length() > 0 {
+      return true
     }
   }
-  for e in m.elems {
-    if !offset_is_const(e.offset) {
-      any = true
+  if m.elems.length() > 0 {
+    return true
+  }
+  for g in m.globals {
+    if !g.imported && offset_is_global(g.init) {
+      return true
     }
   }
-  any
+  false
 }
 
 ///|

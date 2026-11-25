@@ -20,6 +20,7 @@
 
 ///|
 test "three signatures in one table" {
+  moonlift_init()
   inspect(apply1(0, 10), content="11")
   inspect(apply1(1, 10), content="20")
   inspect(apply2(2, 3, 4), content="7")
@@ -29,18 +30,21 @@ test "three signatures in one table" {
 
 ///|
 test "the index is read from memory, like a method table" {
+  moonlift_init()
   inspect(vt(0, 10), content="11")
   inspect(vt(1, 10), content="20")
 }
 
 ///|
 test "indirect calls chain and mix with direct ones" {
+  moonlift_init()
   inspect(chain(5), content="14")
   inspect(mixed(5), content="12")
 }
 
 ///|
 test "a loop that dispatches on every iteration" {
+  moonlift_init()
   inspect(loopdispatch(0, 5), content="7")
   inspect(loopdispatch(3, 4), content="18")
 }

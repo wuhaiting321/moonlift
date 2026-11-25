@@ -216,11 +216,11 @@ fn parse_import_section(
       read_reftype(r)
       let limits = read_limits(r)
       counts.tables = counts.tables + 1
-      tables.push({ limits, })
+      tables.push({ limits, module_name, field_name, })
     } else if kind == 0x02U {
       let limits = read_limits(r)
       counts.memories = counts.memories + 1
-      memories.push({ limits, })
+      memories.push({ limits, module_name, field_name, })
     } else if kind == 0x03U {
       let ty = read_valtype(r)
       let at = r.position()
@@ -236,7 +236,14 @@ fn parse_import_section(
           )
       }
       counts.globals = counts.globals + 1
-      globals.push({ ty, mutable, init: zero_const(ty), imported: true, })
+      globals.push({
+        ty,
+        mutable,
+        init: zero_const(ty),
+        imported: true,
+        module_name,
+        field_name,
+      })
     } else {
       fail_at(
         at_kind,
@@ -327,7 +334,7 @@ fn parse_table_section(
   while i < n {
     read_reftype(r)
     let limits = read_limits(r)
-    tables.push({ limits, })
+    tables.push({ limits, module_name: "", field_name: "", })
     i = i + 1
   }
 }
@@ -349,7 +356,7 @@ fn parse_memory_section(
   let mut i = 0
   while i < n {
     let limits = read_limits(r)
-    memories.push({ limits, })
+    memories.push({ limits, module_name: "", field_name: "", })
     i = i + 1
   }
 }
@@ -433,7 +440,14 @@ fn parse_global_section(
     let at_init = r.position()
     let init = read_const_expr(r)
     check_const_global(init, globals, imported, Some(ty), at_init)
-    globals.push({ ty, mutable, init, imported: false, })
+    globals.push({
+      ty,
+      mutable,
+      init,
+      imported: false,
+      module_name: "",
+      field_name: "",
+    })
     i = i + 1
   }
 }

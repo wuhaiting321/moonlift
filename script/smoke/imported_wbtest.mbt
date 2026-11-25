@@ -19,8 +19,15 @@
 // element segment fills 2 and 3.
 
 ///|
-test "the host sets an imported global, and the segments follow it" {
-  g0.val = 4
+test "the host binds the instances, and the segments follow them" {
+  // Binding, not pre-filling: a fresh memory is handed over, and
+  // `moonlift_init()` is what copies the module's segments into it.
+  moonlift_bind({
+    env_tbl: Array::make(8, -1),
+    env_mem: Memory::new(1, 2),
+    env_base: Ref(4),
+    env_bump: Ref(0),
+  })
   moonlift_init()
   inspect(load0(), content="97")
   inspect(loadbase(), content="88")

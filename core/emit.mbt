@@ -543,15 +543,26 @@ fn Emit::expr(self : Emit, e : Expr) -> String {
 }
 
 ///|
+/// How a global's cell is spelled.
+///
+/// A defined global is a module-level `pub let`. An imported one lives in the
+/// host's `MoonliftExterns` record, reached through a one-line accessor, so two
+/// import entries that name the same `(module, name)` read the *same* cell —
+/// that is the whole point of binding rather than copying.
+fn Emit::gref(self : Emit, i : Int32) -> String {
+  global_ref_text(self.m, i)
+}
+
+///|
 fn Emit::expr_raw(self : Emit, e : Expr) -> String {
   match e {
     EConst(cv) => const_text(cv)
     ELocal(i) => self.local_of(i)
-    EGlobal(i) => "g\{i}.val"
+    EGlobal(i) => "\{self.gref(i)}.val"
     ETemp(k) => self.names.of(k)
     EParam(k) => "in\{k}"
     ELoad(op, a) =>
-      "mem.\{mem_method(op)}(\{addr_text(self.expr(a), op.offset)})"
+      "__ml_mem().\{mem_method(op)}(\{addr_text(self.expr(a), op.offset)})"
     EBin(t, k, a, b) => {
       let x = self.expr(a)
       let y = self.expr(b)
@@ -679,8 +690,8 @@ fn Emit::expr_raw(self : Emit, e : Expr) -> String {
     }
     ESelect(a, b, c) =>
       "(if \{self.cond(c)} { \{self.expr(a)} } else { \{self.expr(b)} })"
-    EMemorySize => "mem.size()"
-    EMemoryGrow(a) => "mem.grow(\{self.expr(a)})"
+    EMemorySize => "__ml_mem().size()"
+    EMemoryGrow(a) => "__ml_mem().grow(\{self.expr(a)})"
   }
 }
 
@@ -690,13 +701,13 @@ fn Emit::expr_raw(self : Emit, e : Expr) -> String {
 fn Emit::stmt(self : Emit, s : Stmt, blk : Int32) -> String {
   match s {
     SLocal(i, e) => "\{self.lname(i)} = \{self.expr(e)}"
-    SGlobal(i, e) => "g\{i}.val = \{self.expr(e)}"
+    SGlobal(i, e) => "\{self.gref(i)}.val = \{self.expr(e)}"
     STemp(k, e) => {
       let t = temp_ty(self.fs, blk, k)
       "\{self.names.bind(k, t)} = \{self.expr(e)}"
     }
     SStore(op, a, v) =>
-      "mem.\{mem_method(op)}(\{addr_text(self.expr(a), op.offset)}, \{self.expr(v)})"
+      "__ml_mem().\{mem_method(op)}(\{addr_text(self.expr(a), op.offset)}, \{self.expr(v)})"
     SEval(e) => "ignore(\{self.expr(e)})"
     // The structurer pulls `if` conditions out of the statement list and turns
     // them into the opening of the two arms; one that survives is a condition
@@ -1503,18 +1514,6 @@ fn Emit::func_text(self : Emit, idx : Int32, root : Node) -> String {
 // --- module assembly ------------------------------------------------------
 
 ///|
-/// The address of a constant-offset data or element segment.
-///
-/// Only an `i32.const` is in the subset; a segment whose offset reads a global is
-/// refused by the decoder rather than guessed at here.
-fn const_offset(e : ConstExpr) -> Int32 {
-  match e {
-    I32Const(v) => v
-    _ => 0
-  }
-}
-
-///|
 /// One byte string literal, for `init_bytes`.
 fn bytes_literal(data : Bytes) -> String {
   let b = StringBuilder()
@@ -1809,33 +1808,31 @@ fn table_text(m : Module) -> String {
   b.write_string(
     "\n// The function table. wasm indexes it with an i32 at run time, so the\n" +
     "// decompiled module holds the same table, as function indices. `-1` is a slot\n" +
-    "// no element segment filled: calling through it traps, as in the original.\n",
+    "// no element segment filled: calling through it traps, as in the original.\n" +
+    "// Element segments are copied in by `moonlift_init()`, because an imported\n" +
+    "// table is not known until the host binds one.\n",
   )
-  b.write_string("pub let __ml_table : Array[Int] = build_table()\n")
-  b.write_string("\n///|\nfn build_table() -> Array[Int] {\n")
-  b.write_string("  let t = Array::make(\{n}, -1)\n")
-  let mut i = 0
-  for e in m.elems {
-    if !offset_is_const(e.offset) {
-      // Placed at a `global.get`: `__ml_layout()` fills it in at init time.
-      i = i + 1
-      continue
+  if m.imported_tables > 0 {
+    let field = match imported_instance_field(m, "table") {
+      Some(f) => f
+      None => "unreachable"
     }
-    let off = const_offset(e.offset)
-    let len = e.funcs.length()
-    b.write_string("  // element segment \{i}: table[\{off}..\{off + len}]\n")
-    b.write_string("  if \{off} < 0 || \{off} + \{len} > t.length() {\n")
     b.write_string(
-      "    trap(\"element segment \{i} does not fit table[0..\{n})\")\n  }\n",
+      "fn __ml_table() -> Array[Int] {\n  __ml_externs.val.\{field}\n}\n",
     )
-    let mut k = 0
-    for f in e.funcs {
-      b.write_string("  t[\{off + k}] = \{f}\n")
-      k = k + 1
-    }
-    i = i + 1
+  } else {
+    b.write_string(
+      "let __ml_table_store : Array[Int] = Array::make(\{n}, -1)\n",
+    )
+    b.write_string(
+      "\n///|\nfn __ml_table() -> Array[Int] {\n  __ml_table_store\n}\n",
+    )
   }
-  b.write_string("  t\n}\n")
+  b.write_string(
+    "\n///|\n/// The table itself, for a host that needs to look at it: an exported table\n" +
+    "/// has to be reachable, and for an imported one this is the bound array.\n",
+  )
+  b.write_string("pub fn table() -> Array[Int] {\n  __ml_table()\n}\n")
   b.write_string(
     "\n///|\n/// The table slot at `i`, or a trap. An index outside the table and an\n" +
     "/// uninitialised slot are the two ways `call_indirect` fails before the type\n" +
@@ -1843,11 +1840,12 @@ fn table_text(m : Module) -> String {
   )
   b.write_string("pub fn __ml_table_at(i : Int) -> Int {\n")
   b.write_string(
-    "  if i < 0 || i >= __ml_table.length() {\n" +
-    "    trap(\"call_indirect: index \" + i.to_string() + \" is outside table[0..\" + __ml_table.length().to_string() + \")\")\n" +
+    "  let t = __ml_table()\n" +
+    "  if i < 0 || i >= t.length() {\n" +
+    "    trap(\"call_indirect: index \" + i.to_string() + \" is outside table[0..\" + t.length().to_string() + \")\")\n" +
     "  }\n",
   )
-  b.write_string("  let f = __ml_table[i]\n")
+  b.write_string("  let f = t[i]\n")
   b.write_string(
     "  if f < 0 {\n    trap(\"call_indirect: table[\" + i.to_string() + \"] is uninitialised\")\n  }\n",
   )
@@ -1868,40 +1866,59 @@ fn table_text(m : Module) -> String {
 fn module_text(m : Module, emitted : Array[Int32]) -> String {
   let b = StringBuilder()
   b.write_string(
-    "// Module-level state: the globals, the linear memory, the table, and the\n" +
-    "// stubs for functions this module imported.\n",
+    "// Module-level state: the instances this module was instantiated against,\n" +
+    "// its globals, its linear memory, its table, and a stub for every function\n" +
+    "// it imported.\n",
   )
   let _ = emitted
+  let slots = import_slots(m)
+  if slots.length() > 0 {
+    b.write_string(externs_text(m, slots))
+  } else {
+    b.write_string(
+      "\n///|\n/// Set by `moonlift_bind()`; `moonlift_init()` clears it. A module\n" +
+      "/// without state imports still needs it, so that `start` runs exactly once.\n" +
+      "let __ml_pending : Ref[Bool] = Ref(true)\n",
+    )
+  }
   if m.globals.length() > 0 {
     b.write_string(
-      "\n// Globals. Every one is a `Ref`, mutable or not, so that a store is\n",
-    )
-    b.write_string(
+      "\n// Globals. Every one is a `Ref`, mutable or not, so that a store is\n" +
       "// `g3.val = ...` and a load is `g3.val` — one spelling for both.\n",
     )
     if m.imported_globals > 0 {
       b.write_string(
-        "//\n// The first \{m.imported_globals} are imported. The host owns them and may\n" +
-        "// assign before calling moonlift_init(); zero is \"never assigned\", which\n" +
-        "// is also what wasm gives a global nothing ever wrote to.\n",
+        "//\n// The first \{m.imported_globals} are imported: their cell belongs to the\n" +
+        "// host and is reached through the binding record, so two import entries\n" +
+        "// that name the same `(module, name)` really are one cell.\n",
       )
     }
     let mut i = 0
     while i < m.globals.length() {
       let g = m.globals[i]
-      let init = if g.imported { zero_text(g.ty) } else { glob_init(g) }
-      b.write_string("pub let g\{i} : Ref[\{ty_name(g.ty)}] = Ref(\{init})\n")
+      if g.imported {
+        // An accessor, not a cell: the cell is the host's. The field name comes
+        // from `import_slots`, which de-duplicates by `(module, name)`.
+        let field = match imported_global_slot(m, i) {
+          Some(s) => s.field
+          None => "unreachable"
+        }
+        b.write_string(
+          "pub fn g\{i}() -> Ref[\{ty_name(g.ty)}] {\n  __ml_externs.val.\{field}\n}\n",
+        )
+      } else {
+        b.write_string(
+          "pub let g\{i} : Ref[\{ty_name(g.ty)}] = Ref(\{glob_init(m, g)})\n",
+        )
+      }
       i = i + 1
     }
   }
   if m.memories.length() > 0 {
     b.write_string(
-      "\n///|\n/// The module's linear memory. Declared data segments are copied in here;\n" +
-      "/// one placed at a `global.get` waits for `moonlift_init()`, because its\n" +
-      "/// address is not known until the host has set that global.\n",
-    )
-    b.write_string(
-      "pub let mem : Memory = make_memory()\n\n///|\nfn make_memory() -> Memory {\n",
+      "\n///|\n/// The module's linear memory. Segments are laid down by `moonlift_init()`,\n" +
+      "/// not here: instantiation is what copies them, and an imported memory is\n" +
+      "/// not known until the host binds one.\n",
     )
     let lim = m.memories[0].limits
     let max_pages = if lim.has_max {
@@ -1909,17 +1926,25 @@ fn module_text(m : Module, emitted : Array[Int32]) -> String {
     } else {
       65536
     }
-    b.write_string(
-      "  let m = Memory::new(\{lim.min.reinterpret_as_int()}, \{max_pages})\n",
-    )
-    for d in m.datas {
-      if d.bytes.length() > 0 && offset_is_const(d.offset) {
-        b.write_string(
-          "  m.init_bytes(\{const_offset(d.offset)}, \{bytes_literal(d.bytes)})\n",
-        )
+    if m.imported_memories > 0 {
+      let field = match imported_instance_field(m, "memory") {
+        Some(f) => f
+        None => "unreachable"
       }
+      b.write_string(
+        "pub fn __ml_mem() -> Memory {\n  __ml_externs.val.\{field}\n}\n",
+      )
+      b.write_string(
+        "\n///|\n/// The memory this package is running on. The host that called\n" +
+        "/// `moonlift_bind()` owns it; the default is a stand-in of the declared size.\n",
+      )
+      b.write_string("pub fn mem() -> Memory {\n  __ml_mem()\n}\n")
+    } else {
+      b.write_string(
+        "pub let mem : Memory = Memory::new(\{lim.min.reinterpret_as_int()}, \{max_pages})\n",
+      )
+      b.write_string("\n///|\nfn __ml_mem() -> Memory {\n  mem\n}\n")
     }
-    b.write_string("  m\n}\n")
   }
   if m.tables.length() > 0 {
     b.write_string(table_text(m))
@@ -1971,10 +1996,14 @@ fn module_text(m : Module, emitted : Array[Int32]) -> String {
     "/// never has to ask whether it should.\n",
   )
   b.write_string("pub fn moonlift_init() -> Unit {\n")
+  b.write_string(
+    "  // Once per instance: instantiation is not something a module does twice,\n" +
+    "  // and re-copying segments over a memory the module has since written would\n" +
+    "  // quietly change its state. `moonlift_bind()` starts a new instance.\n",
+  )
+  b.write_string("  if !__ml_pending.val {\n    return\n  }\n")
+  b.write_string("  __ml_pending.val = false\n")
   if layout != "" {
-    b.write_string(
-      "  // segments whose address comes from an imported global\n",
-    )
     b.write_string("  __ml_layout()\n")
   }
   if m.has_start && m.start_func >= 0 {
@@ -1992,29 +2021,30 @@ fn module_text(m : Module, emitted : Array[Int32]) -> String {
 }
 
 ///|
-/// True when the offset is known at compile time. A `global.get` offset is not:
-/// 1.0 allows it only for an imported global, which is exactly the value the
-/// host supplies at link time.
-fn offset_is_const(e : ConstExpr) -> Bool {
-  match e {
-    I32Const(_) => true
-    _ => false
-  }
-}
-
-///|
-/// The segments that cannot be placed in `make_memory()` / `build_table()`,
-/// because their address is a `global.get`. Empty when every offset is a
-/// constant, so a module without one gets no extra function.
+/// The instantiation step, as generated code: everything wasm does to a fresh
+/// instance and nothing else.
+///
+/// All segments land here, not at package load, for one reason: a module may
+/// import its memory or its table, and those instances do not exist until the
+/// host binds them. Copying segments at load time would fill a stand-in and
+/// leave the real instance empty — "compiles, computes the wrong thing", which
+/// is the failure mode this project exists to avoid.
+///
+/// Empty when there is nothing to do, so a module without segments or imported
+/// initialisers gets no extra function.
 fn layout_text(m : Module) -> String {
   let mut any = false
   for d in m.datas {
-    if d.bytes.length() > 0 && !offset_is_const(d.offset) {
+    if d.bytes.length() > 0 {
       any = true
     }
   }
   for e in m.elems {
-    if !offset_is_const(e.offset) {
+    let _ = e
+    any = true
+  }
+  for g in m.globals {
+    if !g.imported && offset_is_global(g.init) {
       any = true
     }
   }
@@ -2023,44 +2053,53 @@ fn layout_text(m : Module) -> String {
   }
   let b = StringBuilder()
   b.write_string(
-    "\n///|\n/// Segments whose address is a `global.get`. They run from\n" +
-    "/// `moonlift_init()`, after the host has set the imported global they name —\n" +
-    "/// which is what instantiation does with them, too.\n",
+    "\n///|\n/// Segments and imported initialisers, applied to whatever instances are\n" +
+    "/// bound when `moonlift_init()` runs — which is what instantiation does with\n" +
+    "/// them. Call `moonlift_bind()` first if the host owns any of them.\n",
   )
   b.write_string("fn __ml_layout() -> Unit {\n")
+  // Globals first: a segment offset may name one, and a defined global may be
+  // initialised from an imported one (the verifier allows nothing else).
+  let mut gi = 0
+  while gi < m.globals.length() {
+    let g = m.globals[gi]
+    if !g.imported && offset_is_global(g.init) {
+      b.write_string("  g\{gi}.val = \{glob_init(m, g)}\n")
+    }
+    gi = gi + 1
+  }
   for d in m.datas {
-    if d.bytes.length() > 0 && !offset_is_const(d.offset) {
+    if d.bytes.length() > 0 {
       b.write_string(
-        "  mem.init_bytes(\{const_of_global(d.offset)}, \{bytes_literal(d.bytes)})\n",
+        "  __ml_mem().init_bytes(\{const_of_global(m, d.offset)}, \{bytes_literal(d.bytes)})\n",
       )
     }
   }
-  let n = if m.tables.length() > 0 {
-    m.tables[0].limits.min.reinterpret_as_int()
-  } else {
-    0
+  if m.elems.length() > 0 {
+    b.write_string("  let t = __ml_table()\n")
   }
   let mut i = 0
   for e in m.elems {
-    if !offset_is_const(e.offset) {
-      let len = e.funcs.length()
-      b.write_string(
-        "  // element segment \{i}, placed at \{const_of_global(e.offset)}\n",
-      )
-      // `i32` is `Int` in MoonBit, which is exactly the index type of the
-      // generated array, so the global's value needs no conversion.
-      b.write_string("  let at\{i} = \{const_of_global(e.offset)}\n")
-      b.write_string(
-        "  if at\{i} < 0 || at\{i} + \{len} > __ml_table.length() {\n",
-      )
-      b.write_string(
-        "    trap(\"element segment \{i} does not fit table[0..\{n})\")\n  }\n",
-      )
-      let mut k = 0
-      for f in e.funcs {
-        b.write_string("  __ml_table[at\{i} + \{k}] = \{f}\n")
-        k = k + 1
-      }
+    let len = e.funcs.length()
+    let n = if m.tables.length() > 0 {
+      m.tables[0].limits.min.reinterpret_as_int()
+    } else {
+      0
+    }
+    b.write_string(
+      "  // element segment \{i}, placed at \{const_of_global(m, e.offset)}\n",
+    )
+    // `i32` is `Int` in MoonBit, which is exactly the index type of the
+    // generated array, so the offset needs no conversion.
+    b.write_string("  let at\{i} = \{const_of_global(m, e.offset)}\n")
+    b.write_string("  if at\{i} < 0 || at\{i} + \{len} > t.length() {\n")
+    b.write_string(
+      "    trap(\"element segment \{i} does not fit table[0..\{n})\")\n  }\n",
+    )
+    let mut k = 0
+    for f in e.funcs {
+      b.write_string("  t[at\{i} + \{k}] = \{f}\n")
+      k = k + 1
     }
     i = i + 1
   }
@@ -2069,20 +2108,40 @@ fn layout_text(m : Module) -> String {
 }
 
 ///|
-/// A `global.get` initialiser, as a MoonBit expression. Only reachable for an
-/// imported global: the verifier rejects every other kind in a constant
-/// expression, because only an imported global is known to be fixed at link
-/// time.
-fn const_of_global(e : ConstExpr) -> String {
+/// True for an initialiser or offset that names a global. 1.0 allows nothing
+/// else in a constant expression, and the verifier has already checked that the
+/// global is an imported, immutable one of the right type.
+fn offset_is_global(e : ConstExpr) -> Bool {
   match e {
-    GlobalGet(i) => "g\{i}.val"
+    GlobalGet(_) => true
+    _ => false
+  }
+}
+
+///|
+/// How a global's cell is spelled in code outside a function body. Kept next to
+/// `Emit::gref` so the two spellings cannot drift apart: a defined global is a
+/// module-level cell, an imported one is reached through the binding record.
+fn global_ref_text(m : Module, i : Int32) -> String {
+  match imported_global_slot(m, i) {
+    Some(_) => "g\{i}()"
+    None => "g\{i}"
+  }
+}
+
+///|
+/// A `global.get` initialiser, as a MoonBit expression.
+fn const_of_global(m : Module, e : ConstExpr) -> String {
+  match e {
+    I32Const(v) => v.to_string()
+    GlobalGet(i) => "\{global_ref_text(m, i)}.val"
     _ => "0"
   }
 }
 
 ///|
 /// The initial value of a global, as a MoonBit expression.
-fn glob_init(g : Global) -> String {
+fn glob_init(m : Module, g : Global) -> String {
   match g.init {
     I32Const(v) => v.to_string()
     I64Const(v) => "\{v}L"
@@ -2091,10 +2150,92 @@ fn glob_init(g : Global) -> String {
     F64Const(bits) =>
       "Int64::reinterpret_as_double(\{bits.reinterpret_as_int64()}L)"
     // A defined global may only be initialised from an imported one, which the
-    // verifier enforces; that cell is emitted before this one, so reading it
-    // here is a copy, not a forward reference.
-    GlobalGet(i) => "g\{i}.val"
+    // verifier enforces. That cell exists (the default stand-in, at worst), so
+    // reading it here is a copy; `__ml_layout()` takes it again after binding,
+    // which is the value that counts.
+    GlobalGet(i) => "\{global_ref_text(m, i)}.val"
   }
+}
+
+///|
+/// The type of one binding slot, as MoonBit.
+fn slot_ty(s : ImportSlot) -> String {
+  if s.kind == "memory" {
+    "Memory"
+  } else if s.kind == "table" {
+    "Array[Int]"
+  } else {
+    "Ref[\{ty_name(s.ty)}]"
+  }
+}
+
+///|
+/// The stand-in for an unbound slot. Zero-filled and correctly sized, so a
+/// package with no host still builds, runs and traps where wasm would; it is
+/// **not** the host's state, and the doc says so in those words.
+fn slot_default(s : ImportSlot) -> String {
+  if s.kind == "memory" {
+    "Memory::new(\{s.min}, \{s.max})"
+  } else if s.kind == "table" {
+    "Array::make(\{s.min}, -1)"
+  } else {
+    "Ref(\{zero_text(s.ty)})"
+  }
+}
+
+///|
+/// The binding record and the call that fills it.
+///
+/// This is 1.0's `instantiate(module, externvals)` with the vector spelled as a
+/// struct: one field per *distinct* `(module, name)` pair, so two import entries
+/// naming the same thing share a field and aliasing is structural. `moonlift_bind`
+/// is the call that replaces the default stand-ins with the host's instances.
+fn externs_text(m : Module, slots : Array[ImportSlot]) -> String {
+  let _ = m
+  let b = StringBuilder()
+  b.write_string(
+    "\n///|\n/// The instances this module is compiled against: one field per distinct\n" +
+    "/// `(module, name)` pair. The import section may name the same thing more than\n" +
+    "/// once (a mutable global imported twice is the usual case); those entries\n" +
+    "/// share a field, which is what keeps a write through one visible through the\n" +
+    "/// other.\n" +
+    "///\n/// Call `moonlift_bind()` before the first export, and before\n" +
+    "/// `moonlift_init()` if the module has segments: instantiation lays them into\n" +
+    "/// whichever instances are bound at that moment.\n",
+  )
+  b.write_string("pub struct MoonliftExterns {\n")
+  for s in slots {
+    b.write_string("  \{s.field} : \{slot_ty(s)}\n")
+  }
+  b.write_string("}\n")
+  b.write_string("\n///|\nfn default_externs() -> MoonliftExterns {\n  {\n")
+  for s in slots {
+    b.write_string("    \{s.field}: \{slot_default(s)},\n")
+  }
+  b.write_string("  }\n}\n")
+  b.write_string(
+    "\n///|\n/// Live binding. A `Ref` so that re-binding is visible to every function\n" +
+    "/// already compiled against it — the cells themselves never move.\n",
+  )
+  b.write_string(
+    "let __ml_externs : Ref[MoonliftExterns] = Ref(default_externs())\n",
+  )
+  b.write_string(
+    "\n///|\n/// Set by `moonlift_bind()`; cleared by `moonlift_init()`, so segments and\n" +
+    "/// `start` run once per instance rather than once per call.\n" +
+    "let __ml_pending : Ref[Bool] = Ref(true)\n",
+  )
+  b.write_string(
+    "\n///|\n/// Instantiation. Hand the module the instances it was compiled against;\n" +
+    "/// fields left at their defaults are stand-ins, not the host's state.\n" +
+    "///\n/// Binding starts a new instance: the next `moonlift_init()` lays the\n" +
+    "/// segments into these instances and runs `start`, and later calls do nothing.\n",
+  )
+  b.write_string(
+    "pub fn moonlift_bind(e : MoonliftExterns) -> Unit {\n" +
+    "  __ml_externs.val = e\n  __ml_pending.val = true\n}\n",
+  )
+  b.to_string()
 }
 
 ///|

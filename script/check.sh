@@ -356,6 +356,7 @@ fib.wasm|3 emitted, 0 refused, 0 skipped
 globals.wasm|5 emitted, 0 refused, 0 skipped
 imports.wasm|3 emitted, 0 refused, 0 skipped
 imported.wasm|8 emitted, 0 refused, 0 skipped
+alias.wasm|4 emitted, 0 refused, 0 skipped
 memory.wasm|6 emitted, 0 refused, 0 skipped
 nested.wasm|2 emitted, 0 refused, 0 skipped
 stack.wasm|8 emitted, 0 refused, 0 skipped
@@ -429,10 +430,10 @@ if bash script/verify.sh > /tmp/moonlift_verify.log 2>&1; then
   matched=$(printf '%s' "$line" | sed -E 's/.*matched: ([0-9]+).*/\1/')
   skipped=$(printf '%s' "$line" | sed -E 's/.*skipped \(trap\/NaN\): ([0-9]+).*/\1/')
   failed=$(printf '%s' "$line" | sed -E 's/.*failed: ([0-9]+).*/\1/')
-  if [ "$compared" -eq 481 ] && [ "$matched" -eq 481 ] && [ "$failed" -eq 0 ]; then
-    printf 'ok   481 calls compared against Node, 481 matched, %s skipped\n' "$skipped"
+  if [ "$compared" -eq 498 ] && [ "$matched" -eq 498 ] && [ "$failed" -eq 0 ]; then
+    printf 'ok   498 calls compared against Node, 498 matched, %s skipped\n' "$skipped"
   else
-    printf 'FAIL verify: %s compared, %s matched, %s failed (expected 481/481/0)\n' \
+    printf 'FAIL verify: %s compared, %s matched, %s failed (expected 498/498/0)\n' \
       "$compared" "$matched" "$failed"
     fail=1
   fi
@@ -466,6 +467,22 @@ if bash script/indirect.sh > /tmp/moonlift_indirect.log 2>&1; then
 else
   printf 'FAIL indirect: a value or a trap disagrees with the original\n'
   grep -E 'case |FAILED' /tmp/moonlift_indirect.log | head -6
+  fail=1
+fi
+
+step "sharing: imported instances are bound, not copied"
+# The reviewer's question, as a gate: two import entries naming one `(module,
+# name)` must be one cell, binding must replace the stand-in, and binding must
+# not mean pre-filling — a fresh memory handed to `moonlift_bind()` gets the
+# module's segments in `moonlift_init()`. `verify.sh` compares one call at a
+# time; these are properties of the binding model, which no single call shows.
+if bash script/sharing.sh > /tmp/moonlift_sharing.log 2>&1; then
+  while read -r line; do
+    printf '%s\n' "$line"
+  done <<< "$(grep -E '^ok ' /tmp/moonlift_sharing.log)"
+else
+  printf 'FAIL sharing: a binding property does not hold\n'
+  grep -E '^(FAIL|sharing:)' /tmp/moonlift_sharing.log | head -6
   fail=1
 fi
 

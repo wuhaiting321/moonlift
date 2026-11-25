@@ -20,9 +20,13 @@ committed: `bash script/check.sh` never needs the network or a toolchain.
 | `nested.wasm` | `src/nested.wat` (hand-written) | 171 B | A `br_table` inside a `loop` inside a `block`, with a value carried across the dispatch — the case where the branch's payload, not the block's exit stack, has to be written at the edge |
 | `stack.wasm` | `src/stack.wat` (hand-written) | 210 B | The three reordering hazards (local / memory / global) and the three shapes that must *not* spill (`local.tee`, a call consumed by `drop`, a value crossing a block boundary) |
 | `table.wasm` | `src/table.wat` (hand-written) | 246 B | `call_indirect` with a type immediate and an element segment |
+| `indirect.wasm` | `src/indirect.wat` (hand-written) | 604 B | Three signatures in one table, empty slots, a virtual-table layout read from memory, dispatch inside a loop |
+| `imported.wasm` | `src/imported.wat` (hand-written) | 273 B | All four import kinds at once: an imported memory, table and two globals, a constant data segment, a segment placed at `global.get`, and a call into an imported function |
+| `alias.wasm` | `src/alias.wat` (hand-written) | 145 B | One mutable global imported twice under the same `(module, name)`: writing `$a` must be visible through `$b`. The case that decides whether imports are bound or copied |
 | `moonbit_fib.wasm` | MoonBit compiler `0.1.20261020`, `moon build --target wasm` | 20,312 B | Real compiler output: 79 functions, 1 import, `datacount`, name section, 736 bytes of static data |
 
-SHA-256 for every one of these ten binaries is in `corpus/good/SHA256SUMS`.
+SHA-256 for every one of these twelve hand-written binaries and for `moonbit_fib.wasm` is in
+`corpus/good/SHA256SUMS`.
 
 Command for the hand-written fixtures:
 
@@ -111,7 +115,7 @@ modules all import a host for `println`, so they are not run against Node — th
 differential harness (`script/verify.sh`) covers the self-contained fixtures in
 `corpus/good/`.
 
-Building this layer found three bugs that the ten hand-written fixtures missed,
+Building this layer found three bugs that the hand-written fixtures missed,
 all of them in code that compiled but was wrong or uncompilable on real output:
 a `63.to_int64()` parse error (a bare integer literal before a method call),
 an assigned-but-never-read local whose declaration was underscored (`_l9`)

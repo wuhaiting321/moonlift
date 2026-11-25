@@ -14,16 +14,19 @@
 
 ///|
 test "apply dispatches through the element segment" {
+  moonlift_init()
   inspect(apply(0, 10), content="11")
   inspect(apply(1, 10), content="9")
 }
 
 ///|
 test "a call whose result is consumed by another indirect call" {
+  moonlift_init()
   inspect(apply_chain(5), content="10")
 }
 
 ///|
 test "a direct call to a function the table also holds" {
+  moonlift_init()
   inspect(twice(5), content="7")
 }
