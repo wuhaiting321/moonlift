@@ -21,7 +21,7 @@ command in `script/` disagree, that is a bug in one of them.
 | Instructions with an unknown operand length | nothing — decoding **stops** at `0xFD`/`0xFE` and the body is marked partial | — | partial body, reported by `disasm` |
 | Memories | exactly one, 32-bit | `memory64`, multi-memory, shared memory | `E106`, `E103` |
 | Tables | at most one, `funcref` only — indexed by `call_indirect`, initialised by active `elem` segments | a second table, `externref` tables | `E106`, `E101` |
-| Imports | all four kinds. A function import becomes a stub that traps; memory, table and global imports are **materialised** at their declared minimum and zero-filled, and a host may set the globals before `moonlift_init()` | — (nothing in 1.0) | — |
+| Imports | all four kinds. A function import becomes a stub that traps; memory, table and global imports are **bound**: the host passes its instances to `moonlift_bind()`, the binding record is de-duplicated by `(module, name)` so repeated imports alias, and `moonlift_init()` lays the segments into the bound instances | — (nothing in 1.0) | — |
 | Data / element segments | active, table/memory 0, offset is an `i32` constant **or** a `global.get` of an imported immutable `i32` global; the latter is laid down by `moonlift_init()` | passive segments, element expressions, a `global.get` of a mutable or module-defined global | `E109`, `E012` |
 | Control flow | reducible CFGs — guaranteed by the decoder's label-depth check, not by luck; measured 0 irreducible in 78 bodies | a `br` / `br_if` / `br_table` depth beyond the enclosing labels; irreducible CFGs are unreachable from this subset (`E108` reserved, see §3 D3) | `E008`, `E108` |
 | Typing | every body the spec validates: operand types, block results, branch payloads, function result | a body that does not type-check (only reachable from a hand-patched or non-conforming producer) | `E011` |
@@ -370,30 +370,36 @@ the ten hand-written fixtures never did, so ten clean `moon check` runs did not 
 semantics change. Pinned by `script/extended.sh`, which requires every one of the 31 generated
 packages to compile at zero warnings.
 
-### D14 · An imported memory, table and global are materialised, not linked
+### D14 · Instantiation is an explicit call, not a linker
 
-**Deviation.** A module that imports `env.mem` gets a one-page memory of its own, not the host's
-object. The declared minimum is allocated, zero-filled and indexed exactly like a declared memory, so
-`memory.size`, the bounds check and every load are correct; the *contents* are not, because they are
-not in the binary. The same holds for a table (every slot `-1`, i.e. uninitialised) and for a global
-(`Ref(0)`, which is also what wasm gives a global nothing ever wrote to). A host that needs the bytes
-writes them before `moonlift_init()`.
+**Deviation.** In wasm, `instantiate(module, externvals)` is performed by the embedder and the module
+never sees it. Here the same two steps are explicit calls the host makes: `moonlift_bind(externs)`
+hands over the instances, `moonlift_init()` lays the segments into them and runs `start`. A host that
+skips `moonlift_bind()` runs against *stand-ins* — instances of the declared size, zero-filled, one
+per distinct `(module, name)` pair — which preserve aliasing but are not the host's state.
 
-**Reason.** The alternatives are both worse. Refusing the import — what 0.1.0 did, `E107` — excludes
-most real output: `--import-memory` is the default for a wasm library built to be linked, and PIC
-output places its data at `global.get $__memory_base`. Inventing contents would be a wrong answer
-wearing a clean compile, which is the one failure mode this project refuses.
+**What is no longer a deviation.** Earlier versions materialised each import entry into its own object
+and asked the host to pre-fill it. That broke the one thing the spec is unambiguous about: two import
+entries naming the same `(module, name)` are the *same* external value. Two `(import "env" "counter"
+(global (mut i32)))` entries produced two `Ref`s, so a write through the first was invisible through
+the second. The generated record now has one field per distinct pair, and segments are copied at init
+into whatever instance is bound, so nothing has to be pre-filled. Pinned by `corpus/good/alias.wasm`
+and `script/sharing.sh` (5 properties), plus 17 compared calls in `script/verify.sh`.
 
-**Impact.** A module whose behaviour depends on the host's initial memory bytes or table slots runs on
-zeros and empty slots until the host fills them. Both are named in the generated code's comments and
-in `docs/IMPORTS.md`. A segment placed at a `global.get` is laid down by `moonlift_init()` rather than
-at load, because the address is only known once the host has set that global — which is also why
-`verify` marks such a module as needing `moonlift_init()` even when it has no `start` section.
+**Reason for the remaining deviation.** A MoonBit package has no instantiation hook: the language
+runs top-level `let` initialisers and nothing else. The host must call something; making it a named
+function is what lets the same object be shared across calls — and, later, across modules that are
+decompiled into one package.
+
+**Impact.** Two consequences worth naming. A package that is never bound runs on stand-ins, and its
+own doc comment, `docs/SHARING.md` §5 and the `BOUNDARY` entry here all say so in the same words. And
+`moonlift_init()` is once per instance rather than once per call, because re-copying segments over a
+memory the module has since written is a wrong answer, not a harmless repeat.
 
 ## 4. Known limitations at 0.1.0
 
-1. **The differential run covers exports, not bodies.** `script/verify.sh` compares 481 calls across
-   11 fixtures, and every one matches; a further 237 calls where the original traps or returns NaN
+1. **The differential run covers exports, not bodies.** `script/verify.sh` compares 498 calls across
+   12 fixtures, and every one matches; a further 237 calls where the original traps or returns NaN
    are skipped and counted separately. A module that imports memory, table or global *is* covered:
    the plan carries the shape of every non-function import, so Node can build the host object and
    the comparison runs on both sides (`imported` contributes 7 compared calls, and the

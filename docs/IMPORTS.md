@@ -1,113 +1,118 @@
-# 导入：四条边界的落地方式
+# 导入：四类外部值怎么进到生成包里
 
-本文回答一个问题：一个**从宿主链接进来**的 wasm 模块——内存、表、全局都是从外面来的——被 moonlift 反编译之后，这些东西去哪了？
+本文回答一个问题：一个**从宿主链接进来**的 wasm 模块——内存、表、全局、函数都是从外面来的——被 moonlift 反编译之后，这些东西在哪？
 
-结论先说：它们被**物化**（materialised）成生成包里的模块级状态，尺寸取模块声明的下限，内容为零；宿主可以在 `moonlift_init()` 之前把需要的内容写进去。唯一的例外是"段偏移来自导入全局"的那种模块，它的段布局被推迟到 `moonlift_init()` 里执行，因为地址只有宿主知道。
+结论先说：内存、表、全局由宿主通过 `moonlift_bind()` **绑定**进来，生成代码直接使用宿主给的对象，不复制、不预填；函数导入生成真实签名的 `trap` 桩，必须由人接管。别名（同一个 `(module, name)` 被导入两次）与实例化的时刻，见 [SHARING.md](SHARING.md)。
 
-对照的是 `corpus/good/imported.wasm`（手写，273 字节，五个导入：`env.mem` / `env.tbl` / `env.base` / `env.bump` / `env.host_add`）。
+对照 `corpus/good/imported.wasm`（手写，五个导入：`env.mem` / `env.tbl` / `env.base` / `env.bump` / `env.host_add`）。
 
-## 1. 四种导入，两种命运
+## 1. 四种导入，两种处理
 
 | 导入种类 | 生成包里是什么 | 宿主需要做什么 |
 |---|---|---|
-| 函数 `(import "env" "f" (func ...))` | `pub fn h0(...) -> T { trap("import 0 is not implemented") }` | **必须**用真实实现替换函数体；签名已经是对的 |
-| 内存 `(import "env" "mem" (memory 1 2))` | `pub let mem : Memory = make_memory()`，`Memory::new(1, 2)` | 可选：`moonlift_init()` 之前写入字节 |
-| 表 `(import "env" "tbl" (table 8 funcref))` | `pub let __ml_table : Array[Int]`，长度 8，槽位 `-1`（空） | 可选：`moonlift_init()` 之前改槽位；`elem` 段会自动填 |
-| 全局 `(import "env" "base" (global i32))` | `pub let g0 : Ref[Int] = Ref(0)` | 可选：`g0.val = 4`，再调 `moonlift_init()` |
+| 内存 `(import "env" "mem" (memory 1 2))` | `pub struct MoonliftExterns { env_mem : Memory ... }`；`__ml_mem()` 返回绑定值 | `moonlift_bind({ env_mem: m, ... })`，**不需要预先写入字节** |
+| 表 `(import "env" "tbl" (table 8 funcref))` | `env_tbl : Array[Int]`，默认是 8 个 `-1` | 同上；`elem` 段由 `moonlift_init()` 填 |
+| 全局 `(import "env" "base" (global i32))` | `env_base : Ref[Int]`，默认 `Ref(0)` | 同上；两个同名导入共用一个字段（见 SHARING.md） |
+| 函数 `(import "env" "f" (func ...))` | `pub fn h0(...) -> T { trap("import 0 is not implemented") }` | **必须**换成真实实现，签名已经是对的 |
 
-"物化"是一个诚实的说法：对象存在、尺寸正确、可被索引、越界照样陷阱，但**内容是空的**。wasm 里这些内容的来源是宿主，而宿主不在二进制里——猜一个值比留空更糟，所以留空并把写入点写进文档。
+旧版把前三类"物化"成本地副本、要求宿主预填；这一版不再这样做。原因在 `SHARING.md` §1–§2：副本会切断别名，"预填"则要求宿主猜一个本该由绑定关系决定的顺序。
 
-## 2. 生成的代码长什么样
-
-`moonlift decompile corpus/good/imported.wasm -o out/` 之后，`out/module.mbt` 的相关片段（原文，未改写）：
+## 2. 生成的代码（原文）
 
 ```moonbit
-// Globals. Every one is a `Ref`, mutable or not, so that a store is
-// `g3.val = ...` and a load is `g3.val` — one spelling for both.
-//
-// The first 2 are imported. The host owns them and may
-// assign before calling moonlift_init(); zero is "never assigned", which
-// is also what wasm gives a global nothing ever wrote to.
-pub let g0 : Ref[Int] = Ref(0)
-pub let g1 : Ref[Int] = Ref(0)
+pub struct MoonliftExterns {
+  env_tbl : Array[Int]
+  env_mem : Memory
+  env_base : Ref[Int]
+  env_bump : Ref[Int]
+}
 
 ///|
-/// The module's linear memory. Declared data segments are copied in here;
-/// one placed at a `global.get` waits for `moonlift_init()`, because its
-/// address is not known until the host has set that global.
-pub let mem : Memory = make_memory()
+fn default_externs() -> MoonliftExterns {
+  {
+    env_tbl: Array::make(8, -1),
+    env_mem: Memory::new(1, 2),
+    env_base: Ref(0),
+    env_bump: Ref(0),
+  }
+}
+
+pub fn moonlift_bind(e : MoonliftExterns) -> Unit {
+  __ml_externs.val = e
+  __ml_pending.val = true
+}
 
 ///|
-fn make_memory() -> Memory {
-  let m = Memory::new(1, 2)
-  m.init_bytes(0, b"\x61\x62\x63")   // (data (i32.const 0) "abc")
-  m
+pub fn __ml_mem() -> Memory {
+  __ml_externs.val.env_mem
+}
+
+///|
+pub fn mem() -> Memory {
+  __ml_mem()
+}
+
+pub fn g0() -> Ref[Int] {
+  __ml_externs.val.env_base
 }
 ```
 
-而被推迟的那一段：
+段不在包加载时铺，全部在实例化时铺：
 
 ```moonbit
-///|
-/// Segments whose address is a `global.get`. They run from
-/// `moonlift_init()`, after the host has set the imported global they name —
-/// which is what instantiation does with them, too.
 fn __ml_layout() -> Unit {
-  mem.init_bytes(g0.val, b"\x58\x59")            // (data (global.get $base) "XY")
-  // element segment 1, placed at g0.val
-  let at1 = g0.val
-  if at1 < 0 || at1 + 1 > __ml_table.length() {
-    trap("element segment 1 does not fit table[0..8)")
-  }
-  __ml_table[at1 + 0] = 1                        // (elem (global.get $base) $double)
+  __ml_mem().init_bytes(0, b"\x61\x62\x63")            // (data (i32.const 0) "abc")
+  __ml_mem().init_bytes(g0().val, b"\x58\x59")         // (data (global.get $base) "XY")
+  let t = __ml_table()
+  // element segment 0, placed at 2
+  let at0 = 2
+  ...
 }
 
 pub fn moonlift_init() -> Unit {
-  // segments whose address comes from an imported global
+  if !__ml_pending.val {
+    return
+  }
+  __ml_pending.val = false
   __ml_layout()
 }
 ```
 
-为什么不在模块加载时就铺好？因为 `pub let mem` 在包加载时求值，那个时刻宿主还没有机会执行 `g0.val = 4`。wasm 的语义是"实例化时铺"，而 `moonlift_init()` 就是生成包里的"实例化"——所以推迟到那里，语义反而更准。
+`moonlift_init()` 是幂等的，且"每次 `moonlift_bind()` 之后重新武装一次"：实例化对一个模块只发生一次，重复调用不能把模块写过的内存盖回段的初始内容。这条不是细节——改之前 `memory.wasm` 的 `floats(7)` 就是被重复铺段盖掉的。
 
-## 3. 行为等价：同一组调用，两边都跑
+## 3. 行为等价（`base = 4`）
 
-`base = 4` 是这组用例的关键：默认 `base = 0` 时两个 data 段重叠，偏移算错也能读到"对的"字节；`base = 4` 之后，常量段留在 0、`global.get` 段搬到 4，错一位都看得见。
+`base = 4` 是关键：默认 0 时两个 data 段重叠，偏移算错也能读到"对的"字节；4 之后常量段留在 0、`global.get` 段搬到 4，错一位都看得见。
 
-| 调用 | 原件（Node，`base=4`） | 生成包（`wasm-gc`，`g0.val = 4` 后 `moonlift_init()`） |
+| 调用 | 原件（Node，`base=4`） | 生成包（绑定 `base: Ref(4)` 后 `init`） |
 |---|---|---|
-| `load0()` | `97`（`'a'`，常量段仍在 0） | `97` |
-| `loadbase()` | `88`（`'X'`，段跟着 `base` 搬到 4） | `88` |
-| `viabase(0)` | `10`（`table[4]` 由 `elem` 段填成 `$double`） | `10` |
-| `bump1()` ×2 | `1`, `2`（导入的可变全局是模块自己的状态） | `1`, `2` |
-| `memsize()` | `1`（导入内存的声明下限） | `1` |
+| `load0()` | `97`（`'a'`） | `97` |
+| `loadbase()` | `88`（`'X'`） | `88` |
+| `viabase(0)` | `10` | `10` |
+| `bump1()` ×2 | `1`, `2` | `1`, `2` |
+| `memsize()` | `1` | `1` |
 
-复现：
-
-```bash
-moon run cmd/main -- verify corpus/good/imported.wasm -o /tmp/imp     # 写 calls.tsv（含 host 行）
-cd corpus/tools
-node oracle.js ../good/imported.wasm \
-  '[["load0",[]],["loadbase",[]],["bump1",[]],["viabase",[0]],["memsize",[]]]' \
-  /tmp/imp/calls.tsv '{"env.base":4}'
-```
-
-`script/verify.sh` 会自动跑这条路径（默认 `base = 0`，两边一致），`script/check.sh` 里再用 `script/smoke/imported_wbtest.mbt` 把 `base = 4` 的五个期望值钉住。
+这五个值由 `script/sharing.sh` 与 `script/smoke/imported_wbtest.mbt` 两处钉住，后者走 `check.sh`。
 
 ## 4. 宿主接入步骤
 
-1. `moonlift info x.wasm` → 看 `imports` 行的四类计数，看 `tables` / `memories` / `globals` 的声明下限。
-2. `moonlift decompile x.wasm -o out/` → 生成包，被拒绝的函数已经在 `--struct-stats` 里点过名。
-3. `cd out && moon check` → 零告警是常态；有告警就是生成器的 bug。
-4. 有函数导入 → 把 `h0` / `h1` … 的函数体换成真实实现（**这一步只能人工**，宿主语义无法从二进制猜出来）。
-5. 需要预置内存 / 表 / 全局 → 在 `moonlift_init()` 之前赋值（全局 `g0.val = ...`；内存用 `mem.init_bytes`；表用 `__ml_table[i] = <函数索引>`）。
-6. 宿主调一次 `moonlift_init()`：铺 `global.get` 段、跑 `start` 段。之后所有导出都可以调用。
+1. `moonlift info x.wasm` → 看 `imports` / `tables` / `memories` / `globals` 的导入计数与声明下限。
+2. `moonlift decompile x.wasm -o out/` → 生成包；被拒绝的函数已在 `--struct-stats` 里点名。
+3. 打开 `out/module.mbt` 的 `MoonliftExterns`：**字段就是你要交的东西**——内存、表、每个不同的 `(module, name)` 全局各一个。
+4. 写绑定与实例化两行：
+   ```moonbit
+   moonlift_bind({ env_mem: my_memory, env_tbl: my_table, env_base: Ref(4), env_bump: Ref(0) })
+   moonlift_init()
+   ```
+   顺序不能反：段铺在绑定的实例上。
+5. 有函数导入 → 把 `h0` / `h1` … 的函数体换成真实实现（这一步只能人工）。
+6. `cd out && moon check` → 零错误零告警是常态；有告警就是生成器的 bug。
 7. `bash script/verify.sh x.wasm` → 与 Node 跑原件逐值比对。
 
-## 5. 仍然需要人或无法做到的部分
+## 5. 边界
 
-- **函数导入没有默认实现**：生成的桩一律 `trap`，宿主必须接管。这是设计而非缺口——猜一个宿主函数的行为等于伪造语义。
-- **运行期增删表项（`table.set` / `table.grow`）**：属于引用类型提案，不在 1.0；`__ml_table` 是编译期常量数组。
-- **导入内存的初始内容**：不在二进制里。`Memory::new` 给的是全零，`memory.size` 与越界检查都是对的，但字节要宿主自己写。
-- **多内存 / 多表**：1.0 至多各一个，多一个报 `E106`。
+- **函数导入没有默认实现**：桩一律 `trap`。猜宿主函数的行为等于伪造语义。
+- **`table.set` / `table.grow`**：引用类型提案，不在 1.0；`__ml_table()` 是普通数组，只有 `elem` 段会写它。
 - **段偏移指向可变全局或模块自定义全局**：规范不允许（偏移必须每次实例化都一样），报 `E012`。
+- **跨包共享同一内存**：每个生成包自带 `runtime.mbt`，类型不同名，宿主无法把同一个 `Memory` 交给两个包；需把多个模块反编译进同一个包。见 `SHARING.md` §6 与 `BOUNDARY.md`。
+- **多内存 / 多表**：1.0 至多各一个，多一个报 `E106`。

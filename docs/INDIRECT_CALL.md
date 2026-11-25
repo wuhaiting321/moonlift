@@ -63,10 +63,11 @@ fn build_table() -> Array[Int] {
 
 ```moonbit
 pub fn __ml_table_at(i : Int) -> Int {
-  if i < 0 || i >= __ml_table.length() {
-    trap("call_indirect: index " + i.to_string() + " is outside table[0.." + __ml_table.length().to_string() + ")")
+  let t = __ml_table()          // the bound table; element segments fill it at init
+  if i < 0 || i >= t.length() {
+    trap("call_indirect: index " + i.to_string() + " is outside table[0.." + t.length().to_string() + ")")
   }
-  let f = __ml_table[i]
+  let f = t[i]
   if f < 0 {
     trap("call_indirect: table[" + i.to_string() + "] is uninitialised")
   }
@@ -139,8 +140,8 @@ table            44     37      7      0  null function or function signature mi
 | 情况 | 为什么 | 人的动作 |
 |---|---|---|
 | 运行期 `table.set` / `table.grow` | 这两个指令属于 reference-types 提案，不是 1.0；1.0 的表只能由 `elem` 段在实例化时填一次 | 不在 1.0 目标范围内；遇到时按 `E110`/`E006` 报码停止 |
-| 宿主提供表（`(import "env" "table")`） | 表内容在宿主里决定，二进制里只有尺寸 | 生成包按声明尺寸建表；宿主若预填过内容，需在 `moonlift_init` 之前写入 `__ml_table` |
-| 元素段偏移读导入全局 | 1.0 允许，但那个值在宿主里（例如 `__table_base`） | 目前按"偏移未知"拒绝该模块（`E010` + 偏移），人工把 `.wat` 里的偏移改成常量后重跑 |
+| 宿主提供表（`(import "env" "table")`） | 表槽位存的是**本包函数索引**，宿主手里的索引属于另一个模块 | 宿主把表交给 `moonlift_bind()`，`elem` 段由 `moonlift_init()` 填入；表里的内容仍由本包决定，跨包共享表需把模块反编译进同一个包 |
+| 元素段偏移读导入全局 | 1.0 允许（偏移必须是导入的不可变全局） | 已支持：偏移在 `moonlift_init()` 里求值并铺段，不需要人改 `.wat`；可变 / 自定义全局仍报 `E012` |
 
 ## 7. 复现
 

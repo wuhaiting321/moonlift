@@ -131,7 +131,7 @@ it, `globals.wasm`'s `f4()` returns 0 where the original returns 1 — a bug tha
 
 Integers compare as decimal text, floats as **signed bit patterns**. A call whose original traps,
 or returns a NaN, is *skipped* and counted in its own column — a skipped call is not a pass. This
-is why the report prints 481 compared / 481 matched / 237 skipped rather than a single percentage.
+is why the report prints 498 compared / 498 matched / 237 skipped rather than a single percentage.
 
 ## 4. Why verification is split three ways
 
