@@ -50,6 +50,11 @@ pub struct GenReport {
 ///|
 /// Everything the renderer needs about one function.
 priv struct Emit {
+  /// The prefix every top-level name of this module carries. Empty when the
+  /// package holds one module — the usual case, and the one every doc shows —
+  /// and `m1_` when several modules are decompiled into one package, because a
+  /// MoonBit package has a single namespace and two modules both want `f0`.
+  pre : String
   m : Module
   env : FuncEnv
   fs : FuncStack
@@ -142,8 +147,8 @@ fn vt_eq(a : ValType, b : ValType) -> Bool {
 }
 
 ///|
-fn func_name(idx : Int32) -> String {
-  "f\{idx}"
+fn func_name(pre : String, idx : Int32) -> String {
+  "\{pre}f\{idx}"
 }
 
 ///|
@@ -550,7 +555,7 @@ fn Emit::expr(self : Emit, e : Expr) -> String {
 /// import entries that name the same `(module, name)` read the *same* cell —
 /// that is the whole point of binding rather than copying.
 fn Emit::gref(self : Emit, i : Int32) -> String {
-  global_ref_text(self.m, i)
+  global_ref_text(self.pre, self.m, i)
 }
 
 ///|
@@ -562,7 +567,7 @@ fn Emit::expr_raw(self : Emit, e : Expr) -> String {
     ETemp(k) => self.names.of(k)
     EParam(k) => "in\{k}"
     ELoad(op, a) =>
-      "__ml_mem().\{mem_method(op)}(\{addr_text(self.expr(a), op.offset)})"
+      "\{self.pre}__ml_mem().\{mem_method(op)}(\{addr_text(self.expr(a), op.offset)})"
     EBin(t, k, a, b) => {
       let x = self.expr(a)
       let y = self.expr(b)
@@ -659,9 +664,9 @@ fn Emit::expr_raw(self : Emit, e : Expr) -> String {
       // generated `host.mbt` names them `h{i}` so that a reader can see which
       // calls leave the module.
       if f < self.m.imported_func_count() {
-        b.write_string("h\{f}(")
+        b.write_string("\{self.pre}h\{f}(")
       } else {
-        b.write_string("\{func_name(f)}(")
+        b.write_string("\{func_name(self.pre, f)}(")
       }
       let mut first = true
       for a in args {
@@ -679,7 +684,7 @@ fn Emit::expr_raw(self : Emit, e : Expr) -> String {
     // rejects an uninitialised slot, checks the signature, and only then calls.
     ECallIndirect(t, i, args) => {
       let b = StringBuilder()
-      b.write_string("__ml_indirect_t\{t}(")
+      b.write_string("\{self.pre}__ml_indirect_t\{t}(")
       b.write_string(self.expr(i))
       for a in args {
         b.write_string(", ")
@@ -690,8 +695,8 @@ fn Emit::expr_raw(self : Emit, e : Expr) -> String {
     }
     ESelect(a, b, c) =>
       "(if \{self.cond(c)} { \{self.expr(a)} } else { \{self.expr(b)} })"
-    EMemorySize => "__ml_mem().size()"
-    EMemoryGrow(a) => "__ml_mem().grow(\{self.expr(a)})"
+    EMemorySize => "\{self.pre}__ml_mem().size()"
+    EMemoryGrow(a) => "\{self.pre}__ml_mem().grow(\{self.expr(a)})"
   }
 }
 
@@ -707,7 +712,7 @@ fn Emit::stmt(self : Emit, s : Stmt, blk : Int32) -> String {
       "\{self.names.bind(k, t)} = \{self.expr(e)}"
     }
     SStore(op, a, v) =>
-      "__ml_mem().\{mem_method(op)}(\{addr_text(self.expr(a), op.offset)}, \{self.expr(v)})"
+      "\{self.pre}__ml_mem().\{mem_method(op)}(\{addr_text(self.expr(a), op.offset)}, \{self.expr(v)})"
     SEval(e) => "ignore(\{self.expr(e)})"
     // The structurer pulls `if` conditions out of the statement list and turns
     // them into the opening of the two arms; one that survives is a condition
@@ -1441,7 +1446,7 @@ fn Emit::func_text(self : Emit, idx : Int32, root : Node) -> String {
   let label = self.m.func_label(idx)
   let named = if label == "" { "" } else { " `" + label + "`" }
   b.write_string("\n///|\n/// wasm function \{idx}\{named}\n")
-  b.write_string("pub fn \{func_name(idx)}(")
+  b.write_string("pub fn \{func_name(self.pre, idx)}(")
   let mut i = 0
   while i < nparams {
     if i > 0 {
@@ -1505,7 +1510,9 @@ fn Emit::func_text(self : Emit, idx : Int32, root : Node) -> String {
     // `while true` never ends, so a function whose last construct is a loop needs
     // something of the result type after it. This is the same trap the original
     // would hit if control ever got there, which it cannot.
-    b.write_string("  trap(\"control reached the end of \{func_name(idx)}\")\n")
+    b.write_string(
+      "  trap(\"control reached the end of \{func_name(self.pre, idx)}\")\n",
+    )
   }
   b.write_string("}\n")
   b.to_string()
@@ -1607,7 +1614,7 @@ fn escape_text(s : String) -> String {
 /// caller still compiles and still has the right arity: the module runs
 /// everywhere except through the code that was not recovered, and it stops
 /// loudly at exactly that point instead of quietly returning a wrong value.
-fn stub_text(m : Module, idx : Int32, why : String) -> String {
+fn stub_text(pre : String, m : Module, idx : Int32, why : String) -> String {
   let ft = match m.func_type(idx) {
     Some(t) => t
     None => return ""
@@ -1616,7 +1623,7 @@ fn stub_text(m : Module, idx : Int32, why : String) -> String {
   b.write_string(
     "\n///|\n/// wasm function \{idx}: **not decompiled**, so every call traps.\n///\n/// \{escape_text(why)}\n",
   )
-  b.write_string("pub fn \{func_name(idx)}(")
+  b.write_string("pub fn \{func_name(pre, idx)}(")
   let mut k = 0
   while k < ft.params.length() {
     if k > 0 {
@@ -1633,7 +1640,7 @@ fn stub_text(m : Module, idx : Int32, why : String) -> String {
     b.write_string(" -> Unit")
   }
   b.write_string(
-    " {\n  trap(\"f\{idx} was not decompiled: \{escape_text(why)}\")\n}\n",
+    " {\n  trap(\"\{pre}f\{idx} was not decompiled: \{escape_text(why)}\")\n}\n",
   )
   b.to_string()
 }
@@ -1738,7 +1745,7 @@ fn funcs_with_sig(m : Module, ft : FuncType) -> Array[Int32] {
 /// comparison at run time — it is the set of arms below. A function whose
 /// signature differs cannot match an arm, so it reaches the trap, which is
 /// exactly what the engine would raise.
-fn dispatcher_text(m : Module, t : Int32) -> String {
+fn dispatcher_text(pre : String, m : Module, t : Int32) -> String {
   let ft = m.types[t]
   let b = StringBuilder()
   b.write_string(
@@ -1749,7 +1756,7 @@ fn dispatcher_text(m : Module, t : Int32) -> String {
     "/// every other function index falls through to the trap. That is the wasm\n" +
     "/// type check, written as a match instead of a run-time comparison.\n",
   )
-  b.write_string("pub fn __ml_indirect_t\{t}(i : Int")
+  b.write_string("pub fn \{pre}__ml_indirect_t\{t}(i : Int")
   let mut k = 0
   while k < ft.params.length() {
     b.write_string(", a\{k} : \{ty_name(ft.params[k])}")
@@ -1767,15 +1774,15 @@ fn dispatcher_text(m : Module, t : Int32) -> String {
     // Still check the index and the slot: a trap for "no such signature" that
     // fired before the bounds check would hide a real out-of-range call.
     b.write_string(
-      "  ignore(__ml_table_at(i))\n  trap(\"call_indirect: no function has type \{sig_text(ft)}\")\n",
+      "  ignore(\{pre}__ml_table_at(i))\n  trap(\"call_indirect: no function has type \{sig_text(ft)}\")\n",
     )
   } else {
-    b.write_string("  match __ml_table_at(i) {\n")
+    b.write_string("  match \{pre}__ml_table_at(i) {\n")
     for f in arms {
       let callee = if f < m.imported_func_count() {
-        "h\{f}"
+        "\{pre}h\{f}"
       } else {
-        func_name(f)
+        func_name(pre, f)
       }
       b.write_string("    \{f} => \{callee}(")
       let mut j = 0
@@ -1799,7 +1806,7 @@ fn dispatcher_text(m : Module, t : Int32) -> String {
 
 ///|
 /// The table itself, plus the two checks every indirect call starts with.
-fn table_text(m : Module) -> String {
+fn table_text(pre : String, m : Module) -> String {
   if m.tables.length() == 0 {
     return ""
   }
@@ -1809,8 +1816,8 @@ fn table_text(m : Module) -> String {
     "\n// The function table. wasm indexes it with an i32 at run time, so the\n" +
     "// decompiled module holds the same table, as function indices. `-1` is a slot\n" +
     "// no element segment filled: calling through it traps, as in the original.\n" +
-    "// Element segments are copied in by `moonlift_init()`, because an imported\n" +
-    "// table is not known until the host binds one.\n",
+    "// Element segments are copied in by `\{pre}moonlift_init()`, because an\n" +
+    "// imported table is not known until the host binds one.\n",
   )
   if m.imported_tables > 0 {
     let field = match imported_instance_field(m, "table") {
@@ -1818,29 +1825,31 @@ fn table_text(m : Module) -> String {
       None => "unreachable"
     }
     b.write_string(
-      "fn __ml_table() -> Array[Int] {\n  __ml_externs.val.\{field}\n}\n",
+      "fn \{pre}__ml_table() -> Array[Int] {\n  \{pre}__ml_externs.val.\{field}\n}\n",
     )
   } else {
     b.write_string(
-      "let __ml_table_store : Array[Int] = Array::make(\{n}, -1)\n",
+      "let \{pre}__ml_table_store : Array[Int] = Array::make(\{n}, -1)\n",
     )
     b.write_string(
-      "\n///|\nfn __ml_table() -> Array[Int] {\n  __ml_table_store\n}\n",
+      "\n///|\nfn \{pre}__ml_table() -> Array[Int] {\n  \{pre}__ml_table_store\n}\n",
     )
   }
   b.write_string(
     "\n///|\n/// The table itself, for a host that needs to look at it: an exported table\n" +
     "/// has to be reachable, and for an imported one this is the bound array.\n",
   )
-  b.write_string("pub fn table() -> Array[Int] {\n  __ml_table()\n}\n")
+  b.write_string(
+    "pub fn \{pre}table() -> Array[Int] {\n  \{pre}__ml_table()\n}\n",
+  )
   b.write_string(
     "\n///|\n/// The table slot at `i`, or a trap. An index outside the table and an\n" +
     "/// uninitialised slot are the two ways `call_indirect` fails before the type\n" +
     "/// check even starts.\n",
   )
-  b.write_string("pub fn __ml_table_at(i : Int) -> Int {\n")
+  b.write_string("pub fn \{pre}__ml_table_at(i : Int) -> Int {\n")
   b.write_string(
-    "  let t = __ml_table()\n" +
+    "  let t = \{pre}__ml_table()\n" +
     "  if i < 0 || i >= t.length() {\n" +
     "    trap(\"call_indirect: index \" + i.to_string() + \" is outside table[0..\" + t.length().to_string() + \")\")\n" +
     "  }\n",
@@ -1863,7 +1872,7 @@ fn table_text(m : Module) -> String {
 /// all: its address depends on a value only the host knows, so it is filled in
 /// `moonlift_init()`, the point in the generated module's life that corresponds
 /// to instantiation.
-fn module_text(m : Module, emitted : Array[Int32]) -> String {
+fn module_text(pre : String, m : Module, emitted : Array[Int32]) -> String {
   let b = StringBuilder()
   b.write_string(
     "// Module-level state: the instances this module was instantiated against,\n" +
@@ -1873,12 +1882,12 @@ fn module_text(m : Module, emitted : Array[Int32]) -> String {
   let _ = emitted
   let slots = import_slots(m)
   if slots.length() > 0 {
-    b.write_string(externs_text(m, slots))
+    b.write_string(externs_text(pre, m, slots))
   } else {
     b.write_string(
-      "\n///|\n/// Set by `moonlift_bind()`; `moonlift_init()` clears it. A module\n" +
-      "/// without state imports still needs it, so that `start` runs exactly once.\n" +
-      "let __ml_pending : Ref[Bool] = Ref(true)\n",
+      "\n///|\n/// Set by `\{pre}moonlift_bind()`; `\{pre}moonlift_init()` clears it. A\n" +
+      "/// module without state imports still needs it, so that `start` runs once.\n" +
+      "let \{pre}__ml_pending : Ref[Bool] = Ref(true)\n",
     )
   }
   if m.globals.length() > 0 {
@@ -1904,11 +1913,11 @@ fn module_text(m : Module, emitted : Array[Int32]) -> String {
           None => "unreachable"
         }
         b.write_string(
-          "pub fn g\{i}() -> Ref[\{ty_name(g.ty)}] {\n  __ml_externs.val.\{field}\n}\n",
+          "pub fn \{pre}g\{i}() -> Ref[\{ty_name(g.ty)}] {\n  \{pre}__ml_externs.val.\{field}\n}\n",
         )
       } else {
         b.write_string(
-          "pub let g\{i} : Ref[\{ty_name(g.ty)}] = Ref(\{glob_init(m, g)})\n",
+          "pub let \{pre}g\{i} : Ref[\{ty_name(g.ty)}] = Ref(\{glob_init(pre, m, g)})\n",
         )
       }
       i = i + 1
@@ -1916,9 +1925,9 @@ fn module_text(m : Module, emitted : Array[Int32]) -> String {
   }
   if m.memories.length() > 0 {
     b.write_string(
-      "\n///|\n/// The module's linear memory. Segments are laid down by `moonlift_init()`,\n" +
-      "/// not here: instantiation is what copies them, and an imported memory is\n" +
-      "/// not known until the host binds one.\n",
+      "\n///|\n/// The module's linear memory. Segments are laid down by\n" +
+      "/// `\{pre}moonlift_init()`, not here: instantiation is what copies them, and\n" +
+      "/// an imported memory is not known until the host binds one.\n",
     )
     let lim = m.memories[0].limits
     let max_pages = if lim.has_max {
@@ -1932,27 +1941,30 @@ fn module_text(m : Module, emitted : Array[Int32]) -> String {
         None => "unreachable"
       }
       b.write_string(
-        "pub fn __ml_mem() -> Memory {\n  __ml_externs.val.\{field}\n}\n",
+        "pub fn \{pre}__ml_mem() -> Memory {\n  \{pre}__ml_externs.val.\{field}\n}\n",
       )
       b.write_string(
-        "\n///|\n/// The memory this package is running on. The host that called\n" +
-        "/// `moonlift_bind()` owns it; the default is a stand-in of the declared size.\n",
+        "\n///|\n/// The memory this module is running on. The host that called\n" +
+        "/// `\{pre}moonlift_bind()` owns it; the default is a stand-in of the\n" +
+        "/// declared size.\n",
       )
-      b.write_string("pub fn mem() -> Memory {\n  __ml_mem()\n}\n")
+      b.write_string("pub fn \{pre}mem() -> Memory {\n  \{pre}__ml_mem()\n}\n")
     } else {
       b.write_string(
-        "pub let mem : Memory = Memory::new(\{lim.min.reinterpret_as_int()}, \{max_pages})\n",
+        "pub let \{pre}mem : Memory = Memory::new(\{lim.min.reinterpret_as_int()}, \{max_pages})\n",
       )
-      b.write_string("\n///|\nfn __ml_mem() -> Memory {\n  mem\n}\n")
+      b.write_string(
+        "\n///|\nfn \{pre}__ml_mem() -> Memory {\n  \{pre}mem\n}\n",
+      )
     }
   }
   if m.tables.length() > 0 {
-    b.write_string(table_text(m))
+    b.write_string(table_text(pre, m))
     for t in indirect_type_indices(m) {
-      b.write_string(dispatcher_text(m, t))
+      b.write_string(dispatcher_text(pre, m, t))
     }
   }
-  let layout = layout_text(m)
+  let layout = layout_text(pre, m)
   if layout != "" {
     b.write_string(layout)
   }
@@ -1969,7 +1981,7 @@ fn module_text(m : Module, emitted : Array[Int32]) -> String {
         Some(t) => t
         None => continue_i()
       }
-      b.write_string("\npub fn h\{i}(")
+      b.write_string("\npub fn \{pre}h\{i}(")
       let mut k = 0
       while k < ft.params.length() {
         if k > 0 {
@@ -1995,22 +2007,22 @@ fn module_text(m : Module, emitted : Array[Int32]) -> String {
     "/// before any export. Present even when there is nothing to run, so a host\n" +
     "/// never has to ask whether it should.\n",
   )
-  b.write_string("pub fn moonlift_init() -> Unit {\n")
+  b.write_string("pub fn \{pre}moonlift_init() -> Unit {\n")
   b.write_string(
     "  // Once per instance: instantiation is not something a module does twice,\n" +
     "  // and re-copying segments over a memory the module has since written would\n" +
-    "  // quietly change its state. `moonlift_bind()` starts a new instance.\n",
+    "  // quietly change its state. `\{pre}moonlift_bind()` starts a new instance.\n",
   )
-  b.write_string("  if !__ml_pending.val {\n    return\n  }\n")
-  b.write_string("  __ml_pending.val = false\n")
+  b.write_string("  if !\{pre}__ml_pending.val {\n    return\n  }\n")
+  b.write_string("  \{pre}__ml_pending.val = false\n")
   if layout != "" {
-    b.write_string("  __ml_layout()\n")
+    b.write_string("  \{pre}__ml_layout()\n")
   }
   if m.has_start && m.start_func >= 0 {
     let callee = if m.start_func < imports {
-      "h\{m.start_func}"
+      "\{pre}h\{m.start_func}"
     } else {
-      func_name(m.start_func)
+      func_name(pre, m.start_func)
     }
     b.write_string(
       "  // start section: function \{m.start_func}\n  \{callee}()\n",
@@ -2032,7 +2044,7 @@ fn module_text(m : Module, emitted : Array[Int32]) -> String {
 ///
 /// Empty when there is nothing to do, so a module without segments or imported
 /// initialisers gets no extra function.
-fn layout_text(m : Module) -> String {
+fn layout_text(pre : String, m : Module) -> String {
   let mut any = false
   for d in m.datas {
     if d.bytes.length() > 0 {
@@ -2054,29 +2066,29 @@ fn layout_text(m : Module) -> String {
   let b = StringBuilder()
   b.write_string(
     "\n///|\n/// Segments and imported initialisers, applied to whatever instances are\n" +
-    "/// bound when `moonlift_init()` runs — which is what instantiation does with\n" +
-    "/// them. Call `moonlift_bind()` first if the host owns any of them.\n",
+    "/// bound when `\{pre}moonlift_init()` runs — which is what instantiation does with\n" +
+    "/// them. Call `\{pre}moonlift_bind()` first if the host owns any of them.\n",
   )
-  b.write_string("fn __ml_layout() -> Unit {\n")
+  b.write_string("fn \{pre}__ml_layout() -> Unit {\n")
   // Globals first: a segment offset may name one, and a defined global may be
   // initialised from an imported one (the verifier allows nothing else).
   let mut gi = 0
   while gi < m.globals.length() {
     let g = m.globals[gi]
     if !g.imported && offset_is_global(g.init) {
-      b.write_string("  g\{gi}.val = \{glob_init(m, g)}\n")
+      b.write_string("  \{pre}g\{gi}.val = \{glob_init(pre, m, g)}\n")
     }
     gi = gi + 1
   }
   for d in m.datas {
     if d.bytes.length() > 0 {
       b.write_string(
-        "  __ml_mem().init_bytes(\{const_of_global(m, d.offset)}, \{bytes_literal(d.bytes)})\n",
+        "  \{pre}__ml_mem().init_bytes(\{const_of_global(pre, m, d.offset)}, \{bytes_literal(d.bytes)})\n",
       )
     }
   }
   if m.elems.length() > 0 {
-    b.write_string("  let t = __ml_table()\n")
+    b.write_string("  let t = \{pre}__ml_table()\n")
   }
   let mut i = 0
   for e in m.elems {
@@ -2087,17 +2099,19 @@ fn layout_text(m : Module) -> String {
       0
     }
     b.write_string(
-      "  // element segment \{i}, placed at \{const_of_global(m, e.offset)}\n",
+      "  // element segment \{i}, placed at \{const_of_global(pre, m, e.offset)}\n",
     )
     // `i32` is `Int` in MoonBit, which is exactly the index type of the
     // generated array, so the offset needs no conversion.
-    b.write_string("  let at\{i} = \{const_of_global(m, e.offset)}\n")
+    b.write_string("  let at\{i} = \{const_of_global(pre, m, e.offset)}\n")
     b.write_string("  if at\{i} < 0 || at\{i} + \{len} > t.length() {\n")
     b.write_string(
       "    trap(\"element segment \{i} does not fit table[0..\{n})\")\n  }\n",
     )
     let mut k = 0
     for f in e.funcs {
+      // The slot holds the function *index*, not a reference to the function:
+      // the dispatchers match on it and call the name it stands for.
       b.write_string("  t[at\{i} + \{k}] = \{f}\n")
       k = k + 1
     }
@@ -2122,26 +2136,26 @@ fn offset_is_global(e : ConstExpr) -> Bool {
 /// How a global's cell is spelled in code outside a function body. Kept next to
 /// `Emit::gref` so the two spellings cannot drift apart: a defined global is a
 /// module-level cell, an imported one is reached through the binding record.
-fn global_ref_text(m : Module, i : Int32) -> String {
+fn global_ref_text(pre : String, m : Module, i : Int32) -> String {
   match imported_global_slot(m, i) {
-    Some(_) => "g\{i}()"
-    None => "g\{i}"
+    Some(_) => "\{pre}g\{i}()"
+    None => "\{pre}g\{i}"
   }
 }
 
 ///|
 /// A `global.get` initialiser, as a MoonBit expression.
-fn const_of_global(m : Module, e : ConstExpr) -> String {
+fn const_of_global(pre : String, m : Module, e : ConstExpr) -> String {
   match e {
     I32Const(v) => v.to_string()
-    GlobalGet(i) => "\{global_ref_text(m, i)}.val"
+    GlobalGet(i) => "\{global_ref_text(pre, m, i)}.val"
     _ => "0"
   }
 }
 
 ///|
 /// The initial value of a global, as a MoonBit expression.
-fn glob_init(m : Module, g : Global) -> String {
+fn glob_init(pre : String, m : Module, g : Global) -> String {
   match g.init {
     I32Const(v) => v.to_string()
     I64Const(v) => "\{v}L"
@@ -2153,7 +2167,7 @@ fn glob_init(m : Module, g : Global) -> String {
     // verifier enforces. That cell exists (the default stand-in, at worst), so
     // reading it here is a copy; `__ml_layout()` takes it again after binding,
     // which is the value that counts.
-    GlobalGet(i) => "\{global_ref_text(m, i)}.val"
+    GlobalGet(i) => "\{global_ref_text(pre, m, i)}.val"
   }
 }
 
@@ -2190,7 +2204,25 @@ fn slot_default(s : ImportSlot) -> String {
 /// struct: one field per *distinct* `(module, name)` pair, so two import entries
 /// naming the same thing share a field and aliasing is structural. `moonlift_bind`
 /// is the call that replaces the default stand-ins with the host's instances.
-fn externs_text(m : Module, slots : Array[ImportSlot]) -> String {
+fn type_pre(pre : String) -> String {
+  if pre == "" {
+    ""
+  } else {
+    // `m0_` → `M0_`. MoonBit type names start upper-case, so the one type this
+    // emitter generates cannot carry the value prefix unchanged.
+    let tail : String = pre[1:].to_owned()
+    "M" + tail
+  }
+}
+
+///|
+/// `m0_MoonliftExterns` and friends: the prefix a *type* name carries.
+fn externs_name(pre : String) -> String {
+  "\{type_pre(pre)}MoonliftExterns"
+}
+
+///|
+fn externs_text(pre : String, m : Module, slots : Array[ImportSlot]) -> String {
   let _ = m
   let b = StringBuilder()
   b.write_string(
@@ -2199,16 +2231,18 @@ fn externs_text(m : Module, slots : Array[ImportSlot]) -> String {
     "/// once (a mutable global imported twice is the usual case); those entries\n" +
     "/// share a field, which is what keeps a write through one visible through the\n" +
     "/// other.\n" +
-    "///\n/// Call `moonlift_bind()` before the first export, and before\n" +
-    "/// `moonlift_init()` if the module has segments: instantiation lays them into\n" +
+    "///\n/// Call `\{pre}moonlift_bind()` before the first export, and before\n" +
+    "/// `\{pre}moonlift_init()` if the module has segments: instantiation lays them into\n" +
     "/// whichever instances are bound at that moment.\n",
   )
-  b.write_string("pub struct MoonliftExterns {\n")
+  b.write_string("pub struct \{externs_name(pre)} {\n")
   for s in slots {
     b.write_string("  \{s.field} : \{slot_ty(s)}\n")
   }
   b.write_string("}\n")
-  b.write_string("\n///|\nfn default_externs() -> MoonliftExterns {\n  {\n")
+  b.write_string(
+    "\n///|\nfn \{pre}default_externs() -> \{externs_name(pre)} {\n  {\n",
+  )
   for s in slots {
     b.write_string("    \{s.field}: \{slot_default(s)},\n")
   }
@@ -2218,22 +2252,22 @@ fn externs_text(m : Module, slots : Array[ImportSlot]) -> String {
     "/// already compiled against it — the cells themselves never move.\n",
   )
   b.write_string(
-    "let __ml_externs : Ref[MoonliftExterns] = Ref(default_externs())\n",
+    "let \{pre}__ml_externs : Ref[\{externs_name(pre)}] = Ref(\{pre}default_externs())\n",
   )
   b.write_string(
-    "\n///|\n/// Set by `moonlift_bind()`; cleared by `moonlift_init()`, so segments and\n" +
+    "\n///|\n/// Set by `\{pre}moonlift_bind()`; cleared by `\{pre}moonlift_init()`, so segments and\n" +
     "/// `start` run once per instance rather than once per call.\n" +
-    "let __ml_pending : Ref[Bool] = Ref(true)\n",
+    "let \{pre}__ml_pending : Ref[Bool] = Ref(true)\n",
   )
   b.write_string(
     "\n///|\n/// Instantiation. Hand the module the instances it was compiled against;\n" +
     "/// fields left at their defaults are stand-ins, not the host's state.\n" +
-    "///\n/// Binding starts a new instance: the next `moonlift_init()` lays the\n" +
+    "///\n/// Binding starts a new instance: the next `\{pre}moonlift_init()` lays the\n" +
     "/// segments into these instances and runs `start`, and later calls do nothing.\n",
   )
   b.write_string(
-    "pub fn moonlift_bind(e : MoonliftExterns) -> Unit {\n" +
-    "  __ml_externs.val = e\n  __ml_pending.val = true\n}\n",
+    "pub fn \{pre}moonlift_bind(e : \{externs_name(pre)}) -> Unit {\n" +
+    "  \{pre}__ml_externs.val = e\n  \{pre}__ml_pending.val = true\n}\n",
   )
   b.to_string()
 }
@@ -2249,7 +2283,7 @@ fn continue_i() -> FuncType {
 /// One wrapper per exported function, because an export is a name, not a body:
 /// two exports can name the same function, and the wrapper is what makes the
 /// generated module callable the way the original was.
-fn exports_text(m : Module, emitted : Array[Int32]) -> String {
+fn exports_text(pre : String, m : Module, emitted : Array[Int32]) -> String {
   let b = StringBuilder()
   b.write_string(
     "// Exports. Each one calls the generated body, so the entry points have the\n",
@@ -2266,7 +2300,7 @@ fn exports_text(m : Module, emitted : Array[Int32]) -> String {
       Some(t) => t
       None => continue
     }
-    b.write_string("\n///|\npub fn \{sanitize(e.name)}(")
+    b.write_string("\n///|\npub fn \{pre}\{sanitize(e.name)}(")
     let mut k = 0
     while k < ft.params.length() {
       if k > 0 {
@@ -2289,9 +2323,9 @@ fn exports_text(m : Module, emitted : Array[Int32]) -> String {
     // An export of an imported function points at the import stub: the export
     // name was published by the original, so it has to exist here too.
     if e.index < imports {
-      b.write_string("h\{e.index}(")
+      b.write_string("\{pre}h\{e.index}(")
     } else {
-      b.write_string("\{func_name(e.index)}(")
+      b.write_string("\{func_name(pre, e.index)}(")
     }
     k = 0
     while k < ft.params.length() {
@@ -2314,6 +2348,18 @@ fn exports_text(m : Module, emitted : Array[Int32]) -> String {
 /// which is the only layer that can read a file. Everything here is a pure
 /// function of the module.
 pub fn emit_package(m : Module) -> GenReport {
+  emit_package_pre("", m)
+}
+
+///|
+/// Decompile one module into a package whose top-level names carry `pre`.
+///
+/// `pre` is empty for every single-module decompilation, which is why the output
+/// of `moonlift decompile m.wasm` is byte-for-byte what it was before this
+/// parameter existed. It is `m0_`, `m1_`, ... when several modules are
+/// decompiled into one package: a MoonBit package has a single namespace, and
+/// every module wants `f0`, `mem`, `__ml_externs` and `moonlift_init`.
+pub fn emit_package_pre(pre : String, m : Module) -> GenReport {
   let files : Array[GenFile] = []
   let emitted : Array[Int32] = []
   let refused : Array[(Int32, Diag)] = []
@@ -2331,23 +2377,23 @@ pub fn emit_package(m : Module) -> GenReport {
     match structure_func(m, idx) {
       Err(d) => {
         refused.push((idx, d))
-        funcs.write_string(stub_text(m, idx, d.render()))
+        funcs.write_string(stub_text(pre, m, idx, d.render()))
       }
       Ok(t) =>
         if t.skipped != "" {
           skipped.push((idx, t.skipped))
-          funcs.write_string(stub_text(m, idx, t.skipped))
+          funcs.write_string(stub_text(pre, m, idx, t.skipped))
         } else {
           match t.refusal {
             Some(d) => {
               refused.push((idx, d))
-              funcs.write_string(stub_text(m, idx, d.render()))
+              funcs.write_string(stub_text(pre, m, idx, d.render()))
             }
             None =>
               match analyze_func(m, idx) {
                 Err(d) => {
                   refused.push((idx, d))
-                  funcs.write_string(stub_text(m, idx, d.render()))
+                  funcs.write_string(stub_text(pre, m, idx, d.render()))
                 }
                 Ok(fs) => {
                   let env = func_env(m, idx)
@@ -2365,6 +2411,7 @@ pub fn emit_package(m : Module) -> GenReport {
                   let lreads = Array::make(env.locals.length(), false)
                   scan_reads(t.root, lreads, treads)
                   let em : Emit = {
+                    pre,
                     m,
                     env,
                     fs,
@@ -2393,9 +2440,9 @@ pub fn emit_package(m : Module) -> GenReport {
     name: "moon.pkg",
     text: "// No dependencies: the generated package needs nothing\n// outside its own directory.\n",
   })
-  files.push({ name: "module.mbt", text: module_text(m, emitted), })
+  files.push({ name: "module.mbt", text: module_text(pre, m, emitted), })
   files.push({ name: "funcs.mbt", text: funcs.to_string(), })
-  files.push({ name: "exports.mbt", text: exports_text(m, emitted), })
+  files.push({ name: "exports.mbt", text: exports_text(pre, m, emitted), })
   let pages = if m.memories.length() > 0 {
     m.memories[0].limits.min.reinterpret_as_int()
   } else {
@@ -2416,6 +2463,133 @@ pub fn emit_package(m : Module) -> GenReport {
     globals: m.globals.length(),
     imports: m.imported_func_count(),
   }
+}
+
+///|
+/// One package, several modules.
+///
+/// The point is not that the CLI can take two paths: it is that two wasm modules
+/// which import the same memory can be made to share one here. Every generated
+/// package carries its own copy of `runtime.mbt`, so `pkg_a.Memory` and
+/// `pkg_b.Memory` are different types and no host can hand the same instance to
+/// both. Merging the modules into one package makes them one type, and then
+/// "A grows, B sees the new size" is something a test can assert.
+pub struct MultiReport {
+  files : Array[GenFile]
+  /// Per module, in input order.
+  modules : Array[GenReport]
+  /// The prefix each module's top-level names carry. `m0_`, `m1_`, ...
+  prefixes : Array[String]
+}
+
+///|
+/// Decompile several modules into one package.
+///
+/// Each module's top-level names get a prefix — `m0_`, `m1_`, ... — because a
+/// MoonBit package has one namespace and every module wants `f0`, `mem`,
+/// `__ml_externs` and `moonlift_init`. A single module is not prefixed: that
+/// keeps `moonlift decompile m.wasm` byte-identical to what it produced before
+/// this existed.
+pub fn emit_package_multi(ms : Array[Module]) -> MultiReport {
+  if ms.length() == 1 {
+    let r = emit_package(ms[0])
+    return { files: r.files, modules: [r], prefixes: [""], }
+  }
+  let reports : Array[GenReport] = []
+  let prefixes : Array[String] = []
+  let mut i = 0
+  while i < ms.length() {
+    let pre = "m\{i}_"
+    prefixes.push(pre)
+    reports.push(emit_package_pre(pre, ms[i]))
+    i = i + 1
+  }
+  let files : Array[GenFile] = []
+  // `moon.mod` and `moon.pkg` describe the package, not a module: the first
+  // module's copy is the package's. Looked up by name rather than by position,
+  // so that adding a file to `emit_package_pre` cannot silently move them.
+  for f in reports[0].files {
+    if f.name == "moon.mod" || f.name == "moon.pkg" {
+      files.push(f)
+    }
+  }
+  for name in ["module.mbt", "funcs.mbt", "exports.mbt"] {
+    let b = StringBuilder()
+    let mut k = 0
+    while k < reports.length() {
+      for f in reports[k].files {
+        if f.name == name {
+          b.write_string("\n// ===== module \{k} (`\{prefixes[k]}`) =====\n")
+          b.write_string(f.text)
+        }
+      }
+      k = k + 1
+    }
+    files.push({ name, text: b.to_string(), })
+  }
+  let all = StringBuilder()
+  all.write_string(
+    "// One package, several modules.\n" +
+    "//\n" +
+    "// Each module keeps its own top-level names, prefixed `m0_`, `m1_`, ... so that\n" +
+    "// they can share one namespace — and, more to the point, so that they can share\n" +
+    "// one `Memory`: bind the same instance to two modules and `memory.grow` in one\n" +
+    "// is visible through `memory.size` in the other, which is what the spec says\n" +
+    "// two modules importing one memory do.\n",
+  )
+  all.write_string(
+    "\n///|\n/// Instantiate every module in this package, in order.\n" +
+    "///\n/// Bind first — `m0_moonlift_bind(...)`, `m1_moonlift_bind(...)` — then call\n" +
+    "/// this: `moonlift_init()` lays segments into whatever is bound when it runs.\n",
+  )
+  all.write_string("pub fn moonlift_init_all() -> Unit {\n")
+  let mut j = 0
+  while j < reports.length() {
+    all.write_string("  \{prefixes[j]}moonlift_init()\n")
+    j = j + 1
+  }
+  all.write_string("}\n")
+  files.push({ name: "all.mbt", text: all.to_string(), })
+  { files, modules: reports, prefixes, }
+}
+
+///|
+/// What `decompile` prints when the package holds several modules.
+pub fn gen_summary_multi_text(
+  r : MultiReport,
+  paths : Array[String],
+  out_dir : String,
+) -> String {
+  let b = StringBuilder()
+  b.write_string("\{r.modules.length()} modules -> \{out_dir}/\n")
+  let mut i = 0
+  while i < r.modules.length() {
+    let m = r.modules[i]
+    b.write_string(
+      "  \{paths[i]}\n    prefix \{r.prefixes[i]}  functions \{m.emitted.length()} emitted, \{m.refused.length()} refused, \{m.skipped.length()} skipped  exports \{m.exports}\n",
+    )
+    i = i + 1
+  }
+  let names = StringBuilder()
+  for f in r.files {
+    names.write_string(" \{f.name}")
+  }
+  names.write_string(" runtime.mbt")
+  b.write_string("files     \{names.to_string()}\n")
+  i = 0
+  while i < r.modules.length() {
+    for (idx, d) in r.modules[i].refused {
+      b.write_string("  m\{i} refused f\{idx}: \{d.render()}\n")
+    }
+    for (idx, why) in r.modules[i].skipped {
+      b.write_string("  m\{i} skipped f\{idx}: \{why}\n")
+    }
+    i = i + 1
+  }
+  b.write_string(
+    "\nnext: cd \{out_dir} && moon check    (bind, then moonlift_init_all())\n",
+  )
+  b.to_string()
 }
 
 ///|

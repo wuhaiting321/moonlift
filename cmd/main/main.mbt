@@ -24,7 +24,7 @@ fn usage_text() -> String {
   let b = StringBuilder()
   b.write_string(@core.banner())
   b.write_string(
-    "\n\nUsage:\n  moonlift <command> [options]\n\nCommands:\n  info <file.wasm>              print module structure\n  disasm <file.wasm> [--ops|--stats|--cfg|--stack|--struct]\n                                print the decoded listing, or the control-flow graph\n  decompile <file.wasm> -o <dir> emit MoonBit sources into <dir>\n  verify <file.wasm> [-n N]     differential test against a reference engine\n  help                          show this text\n  version                       print version\n\nExit codes: 0 ok, 2 usage, 3 input rejected, 4 input unreadable.\n",
+    "\n\nUsage:\n  moonlift <command> [options]\n\nCommands:\n  info <file.wasm>              print module structure\n  disasm <file.wasm> [--ops|--stats|--cfg|--stack|--struct]\n                                print the decoded listing, or the control-flow graph\n  decompile <file.wasm>... -o <dir>\n                                emit MoonBit sources into <dir>; several files\n                                become one package, sharing one Memory\n  verify <file.wasm> [-n N]     differential test against a reference engine\n  help                          show this text\n  version                       print version\n\nExit codes: 0 ok, 2 usage, 3 input rejected, 4 input unreadable.\n",
   )
   b.to_string()
 }
@@ -243,33 +243,48 @@ fn find_runtime(explicit : String?) -> String? {
 /// that a later run will not overwrite, so the output directory is the user's
 /// once it exists.
 fn run_decompile(args : Array[String]) -> Int32 {
-  if args.length() < 2 {
-    println("moonlift: 'decompile' needs a path to a .wasm file")
-    return EXIT_USAGE
-  }
-  let path = args[1]
+  let inputs : Array[String] = []
   let mut out_dir = ""
   let mut runtime : String? = None
-  let mut i = 2
+  let mut i = 1
   while i < args.length() {
     if args[i] == "-o" && i + 1 < args.length() {
       out_dir = args[i + 1]
-      i = i + 1
+      i = i + 2
     } else if args[i] == "--runtime" && i + 1 < args.length() {
       runtime = Some(args[i + 1])
+      i = i + 2
+    } else if args[i] == "-o" || args[i] == "--runtime" {
+      // A flag with no value is a usage error, reported by the checks below.
+      i = i + 1
+    } else {
+      inputs.push(args[i])
       i = i + 1
     }
-    i = i + 1
+  }
+  if inputs.length() == 0 {
+    println("moonlift: 'decompile' needs a path to a .wasm file")
+    return EXIT_USAGE
   }
   if out_dir == "" {
     println("moonlift: 'decompile' needs an output directory (-o <dir>)")
     return EXIT_USAGE
   }
-  match write_package(path, out_dir, runtime) {
-    None => EXIT_UNREADABLE
-    Some((report, _)) => {
-      println(@core.gen_summary_text(report, path, out_dir))
-      EXIT_OK
+  if inputs.length() == 1 {
+    match write_package(inputs[0], out_dir, runtime) {
+      None => EXIT_UNREADABLE
+      Some((report, _)) => {
+        println(@core.gen_summary_text(report, inputs[0], out_dir))
+        EXIT_OK
+      }
+    }
+  } else {
+    match write_package_multi(inputs, out_dir, runtime) {
+      None => EXIT_UNREADABLE
+      Some(report) => {
+        println(@core.gen_summary_multi_text(report, inputs, out_dir))
+        EXIT_OK
+      }
     }
   }
 }
@@ -409,6 +424,73 @@ fn write_package(
   }
   write_text(out_dir + "/runtime.mbt", runtime_src)
   Some((report, m))
+}
+
+///|
+/// `decompile a.wasm b.wasm -o <dir>`: one package, both modules.
+///
+/// This is the only way to give two modules one `Memory`: each generated package
+/// carries its own `runtime.mbt`, so `pkg_a.Memory` and `pkg_b.Memory` are
+/// different types and no host can pass the same instance to both. In one
+/// package there is one type, one `Memory`, and `memory.grow` in the first
+/// module is visible through `memory.size` in the second.
+fn write_package_multi(
+  paths : Array[String],
+  out_dir : String,
+  runtime : String?,
+) -> @core.MultiReport? {
+  let runtime_path = match find_runtime(runtime) {
+    Some(p) => p
+    None => {
+      println("moonlift: cannot find runtime/runtime.mbt")
+      println(
+        "  run from the repository root, or pass --runtime <path-to-runtime.mbt>",
+      )
+      return None
+    }
+  }
+  let runtime_src = match read_text(runtime_path) {
+    Some(t) => t
+    None => {
+      println("moonlift: cannot read '\{runtime_path}'")
+      return None
+    }
+  }
+  let mods : Array[@core.Module] = []
+  for path in paths {
+    let data = match read_input(path) {
+      None => {
+        println("moonlift: cannot read '\{path}'")
+        return None
+      }
+      Some(d) => d
+    }
+    match @core.decode_bytes(data) {
+      Err(d) => {
+        println("moonlift: rejected '\{path}'")
+        println("  \{d.render_verbose()}")
+        return None
+      }
+      Ok(m) => mods.push(m)
+    }
+  }
+  let report = @core.emit_package_multi(mods)
+  if !@fs.path_exists(out_dir) {
+    match
+      (@fs.create_dir(out_dir) catch {
+        _ => {
+          println("moonlift: cannot create '\{out_dir}'")
+          return None
+        }
+      }) {
+      _ => ()
+    }
+  }
+  for f in report.files {
+    write_text(out_dir + "/" + f.name, f.text)
+  }
+  write_text(out_dir + "/runtime.mbt", runtime_src)
+  Some(report)
 }
 
 ///|

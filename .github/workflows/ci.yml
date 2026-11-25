@@ -17,7 +17,7 @@ permissions:
 
 jobs:
   gate:
-    name: gate (3 targets, 162 tests, 481 differential calls)
+    name: gate (3 targets, 162 tests, 498 differential calls)
     runs-on: ubuntu-latest
     timeout-minutes: 30
 

@@ -23,9 +23,11 @@ committed: `bash script/check.sh` never needs the network or a toolchain.
 | `indirect.wasm` | `src/indirect.wat` (hand-written) | 604 B | Three signatures in one table, empty slots, a virtual-table layout read from memory, dispatch inside a loop |
 | `imported.wasm` | `src/imported.wat` (hand-written) | 273 B | All four import kinds at once: an imported memory, table and two globals, a constant data segment, a segment placed at `global.get`, and a call into an imported function |
 | `alias.wasm` | `src/alias.wat` (hand-written) | 145 B | One mutable global imported twice under the same `(module, name)`: writing `$a` must be visible through `$b`. The case that decides whether imports are bound or copied |
+| `shared_a.wasm` | `src/shared_a.wat` (hand-written) | 91 B | Half of a pair that imports the *same* memory: owns `memory.grow` and a data segment. Merged with `shared_b` into one package by `script/merge.sh`, it is what makes "A grows, B sees the size" testable |
+| `shared_b.wasm` | `src/shared_b.wat` (hand-written) | 74 B | The observing half: `memory.size` and a byte load, nothing else. Alone it proves nothing; next to `shared_a` in one package it proves the memory is shared |
 | `moonbit_fib.wasm` | MoonBit compiler `0.1.20261020`, `moon build --target wasm` | 20,312 B | Real compiler output: 79 functions, 1 import, `datacount`, name section, 736 bytes of static data |
 
-SHA-256 for every one of these twelve hand-written binaries and for `moonbit_fib.wasm` is in
+SHA-256 for every one of these fourteen hand-written binaries and for `moonbit_fib.wasm` is in
 `corpus/good/SHA256SUMS`.
 
 Command for the hand-written fixtures:

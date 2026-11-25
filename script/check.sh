@@ -430,10 +430,10 @@ if bash script/verify.sh > /tmp/moonlift_verify.log 2>&1; then
   matched=$(printf '%s' "$line" | sed -E 's/.*matched: ([0-9]+).*/\1/')
   skipped=$(printf '%s' "$line" | sed -E 's/.*skipped \(trap\/NaN\): ([0-9]+).*/\1/')
   failed=$(printf '%s' "$line" | sed -E 's/.*failed: ([0-9]+).*/\1/')
-  if [ "$compared" -eq 498 ] && [ "$matched" -eq 498 ] && [ "$failed" -eq 0 ]; then
-    printf 'ok   498 calls compared against Node, 498 matched, %s skipped\n' "$skipped"
+  if [ "$compared" -eq 521 ] && [ "$matched" -eq 521 ] && [ "$failed" -eq 0 ]; then
+    printf 'ok   521 calls compared against Node, 521 matched, %s skipped\n' "$skipped"
   else
-    printf 'FAIL verify: %s compared, %s matched, %s failed (expected 498/498/0)\n' \
+    printf 'FAIL verify: %s compared, %s matched, %s failed (expected 521/521/0)\n' \
       "$compared" "$matched" "$failed"
     fail=1
   fi
@@ -483,6 +483,22 @@ if bash script/sharing.sh > /tmp/moonlift_sharing.log 2>&1; then
 else
   printf 'FAIL sharing: a binding property does not hold\n'
   grep -E '^(FAIL|sharing:)' /tmp/moonlift_sharing.log | head -6
+  fail=1
+fi
+
+step "merge: two modules, one package, one Memory"
+# The one thing a single-package-per-module design cannot express: each package
+# copies `runtime.mbt`, so `pkg_a.Memory` and `pkg_b.Memory` are different types
+# and no host can hand one instance to both. Merged, there is one type, and
+# "memory.grow in A is visible as memory.size in B" becomes an assertion instead
+# of a claim.
+if bash script/merge.sh > /tmp/moonlift_merge.log 2>&1; then
+  while read -r line; do
+    printf '%s\n' "$line"
+  done <<< "$(grep -E '^ok ' /tmp/moonlift_merge.log)"
+else
+  printf 'FAIL merge: a sharing property does not hold\n'
+  grep -E '^(FAIL|merge:)' /tmp/moonlift_merge.log | head -6
   fail=1
 fi
 
