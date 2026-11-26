@@ -165,17 +165,36 @@ sharing: 5 ok, 0 failed
 >
 > 完整说明（前缀规则、生成的代码、迁移前后行为表、仍未自动化的部分）见 [MERGE.md](MERGE.md)。仍然不支持的只有"两个**分开的**包之间共享实例"——那需要一个共享的运行时包，生成包目前是零依赖的。
 
-## 7. 仍然需要人做的
+## 7. 表的共享：索引空间也是整包一个
+
+内存之外，1.0 里还有一种 externval 会被两个模块同时导入：函数表。它的语义和内存一样——**A 的 `elem` 段填的槽位，B 的 `call_indirect` 要能调到，而且调到的是 A 的函数**——但实现上多一道坎：槽位里存的是函数索引，而每个模块的函数都从 `0` 开始。
+
+于是合并包不只共享一个 `Memory` 类型，还共享**一个函数索引空间**：模块 `i` 的基址是前面模块函数数之和，`elem` 段写 `base + f`，dispatcher 匹配的也是这个编号，并且每个 dispatcher 除了列自己的函数，还列同包其它模块的函数。
+
+```moonbit
+// module 1 的 dispatcher（生成的原文）
+match m1___ml_table_at(i) {
+  2 => m1_f0()      // 自己的函数 0
+  3 => m1_f1()      // 自己的函数 1
+  0 => m0_f0()      // 同包 module 0 的函数 0：它填了这个槽
+  _ => trap("...")
+}
+```
+
+表本身也从 `Array[Int]` 升级成 `runtime.mbt` 里的 `Table` 类型。理由和 `Memory` 一样：每个生成包自带一份 runtime，`pkg_a.Table` 与 `pkg_b.Table` 是两个类型，所以"两个分开的包共享一张表"编译不过，不会走到"能编译、算错"。完整说明与前后对照见 [MERGE.md](MERGE.md) §5。
+
+## 8. 仍然需要人做的
 
 - **函数导入**：生成的 `h{i}` 是 `trap` 桩，签名真实、行为没有。宿主必须替换函数体——宿主函数的行为不在二进制里，猜就是伪造。
-- **跨包（未合并）的表内容**：表槽位存的是**本包函数索引**，把 A 包的表交给 B 包没有意义。合并进同一个包之后才有意义。
+- **跨包（未合并）的表**：和内存一样，两个分开的包不能共用一个实例；`pkg_a.Table` 是另一个类型，这是编译错误而不是静默错值。
 - **`table.set` / `table.grow`**：引用类型提案，不在 1.0，报 `E101`。
 
-## 8. 复现
+## 9. 复现
 
 ```bash
 moon run cmd/main -- decompile corpus/good/alias.wasm -o /tmp/alias   # 看 MoonliftExterns 只有一个 env_counter
 cd /tmp/alias && moon check                                            # 零错误零告警
 bash script/sharing.sh                                                 # 5 条绑定属性
 bash script/verify.sh corpus/good/alias.wasm                           # 17 个调用与 Node 逐值一致
+bash script/merge.sh                                                   # 内存 4 条 + 函数表 3 条
 ```

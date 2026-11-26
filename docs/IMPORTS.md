@@ -11,7 +11,7 @@
 | 导入种类 | 生成包里是什么 | 宿主需要做什么 |
 |---|---|---|
 | 内存 `(import "env" "mem" (memory 1 2))` | `pub struct MoonliftExterns { env_mem : Memory ... }`；`__ml_mem()` 返回绑定值 | `moonlift_bind({ env_mem: m, ... })`，**不需要预先写入字节** |
-| 表 `(import "env" "tbl" (table 8 funcref))` | `env_tbl : Array[Int]`，默认是 8 个 `-1` | 同上；`elem` 段由 `moonlift_init()` 填 |
+| 表 `(import "env" "tbl" (table 8 funcref))` | `env_tbl : Table`，默认是 8 个空槽（`-1`） | 同上；`elem` 段由 `moonlift_init()` 填；宿主用 `Table::new(8)` 造一张空表 |
 | 全局 `(import "env" "base" (global i32))` | `env_base : Ref[Int]`，默认 `Ref(0)` | 同上；两个同名导入共用一个字段（见 SHARING.md） |
 | 函数 `(import "env" "f" (func ...))` | `pub fn h0(...) -> T { trap("import 0 is not implemented") }` | **必须**换成真实实现，签名已经是对的 |
 
@@ -21,7 +21,7 @@
 
 ```moonbit
 pub struct MoonliftExterns {
-  env_tbl : Array[Int]
+  env_tbl : Table
   env_mem : Memory
   env_base : Ref[Int]
   env_bump : Ref[Int]
@@ -30,7 +30,7 @@ pub struct MoonliftExterns {
 ///|
 fn default_externs() -> MoonliftExterns {
   {
-    env_tbl: Array::make(8, -1),
+    env_tbl: Table::new(8),
     env_mem: Memory::new(1, 2),
     env_base: Ref(0),
     env_bump: Ref(0),
@@ -112,7 +112,8 @@ pub fn moonlift_init() -> Unit {
 ## 5. 边界
 
 - **函数导入没有默认实现**：桩一律 `trap`。猜宿主函数的行为等于伪造语义。
-- **`table.set` / `table.grow`**：引用类型提案，不在 1.0；`__ml_table()` 是普通数组，只有 `elem` 段会写它。
+- **`table.set` / `table.grow`**：引用类型提案，不在 1.0；`__ml_table()` 只有 `elem` 段会写它。
+- **槽位里存的是函数索引**：单模块是本地编号，合并包里是**包内编号**（模块 `i` 的基址 = 前面模块函数数之和）。所以表只在同一个包内有意义；两个分开的包各有一份 `Table` 类型，编译期就传不过去。
 - **段偏移指向可变全局或模块自定义全局**：规范不允许（偏移必须每次实例化都一样），报 `E012`。
 - **跨包共享同一内存**：每个生成包自带 `runtime.mbt`，类型不同名，宿主无法把同一个 `Memory` 交给两个包；需把多个模块反编译进同一个包。见 `SHARING.md` §6 与 `BOUNDARY.md`。
 - **多内存 / 多表**：1.0 至多各一个，多一个报 `E106`。

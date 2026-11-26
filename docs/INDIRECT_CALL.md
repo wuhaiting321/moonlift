@@ -41,21 +41,22 @@ apply1(9,10)       = RuntimeError: table index is out of bounds
 
 ## 3. 迁移后：生成的 MoonBit（`moonlift decompile` 的真实输出）
 
-表按函数索引保存，`-1` 表示没有元素段填过的槽位：
+表按函数索引保存，`-1` 表示没有元素段填过的槽位。表本身是 `runtime.mbt` 里的 `Table`（不是裸数组，理由见 `docs/MERGE.md` §5.3）：
 
 ```moonbit
-fn build_table() -> Array[Int] {
-  let t = Array::make(8, -1)
+let __ml_table_store : Table = Table::new(8)
+
+fn __ml_layout() -> Unit {
+  let t = __ml_table()
   // element segment 0: table[0..5]
-  if 0 < 0 || 0 + 5 > t.length() {
+  if 0 < 0 || 0 + 5 > t.size() {
     trap("element segment 0 does not fit table[0..8)")
   }
-  t[0] = 0
-  t[1] = 1
-  t[2] = 2
-  t[3] = 3
-  t[4] = 4
-  t
+  t.set(0, 0)
+  t.set(1, 1)
+  t.set(2, 2)
+  t.set(3, 3)
+  t.set(4, 4)
 }
 ```
 
@@ -131,7 +132,7 @@ table            44     37      7      0  null function or function signature mi
 5. **（必须人工）** 宿主在调用任何导出前调一次 `moonlift_init()`（对应 wasm 的 `start` 段与实例化）。
 6. `bash script/verify.sh lib.wasm` —— 用 Node 跑原件，与生成包逐调用比对。
 
-**函数表本身不需要人介入**：表内容、槽位顺序、空槽、三类陷阱都由 `elem` 段与 `Array[Int]` 直接还原。这正是这次修改的意义——之前 `E111` 要求"手工内联间接调用"，而运行期索引根本无法内联。
+**函数表本身不需要人介入**：表内容、槽位顺序、空槽、三类陷阱都由 `elem` 段与 `Table` 直接还原。这正是这次修改的意义——之前 `E111` 要求"手工内联间接调用"，而运行期索引根本无法内联。
 
 ## 6. 什么情况下表还需要人动
 

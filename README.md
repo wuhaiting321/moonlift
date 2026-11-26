@@ -24,6 +24,12 @@
 > 每个模块一张绑定记录，`moonlift_init_all()` 统一实例化），于是"同一内存交给两个模块，A `grow` 之后 B 的 `size` 变大"
 > 从一句承诺变成 4 条可执行断言。见 [docs/MERGE.md](docs/MERGE.md) 与 `bash script/merge.sh`。
 
+> **对第三轮初审意见的整改（2026-11-26）**
+> 第三轮意见是"完整 Core 1.0 的承诺与明确排除跨模块共享函数表语义的边界冲突，现有说明无法支撑该范围。请补充一致的标准目标及共享函数表迁移机制后再提交"。
+> 该意见成立，而且是**承诺与边界的自相矛盾**，不是范围问题：表在 1.0 里就是 externval，两个模块导入同一张表、A 的 `elem` 段填的槽位 B 能调到，是标准之内的用法；旧版却把"表槽位存本模块索引，跨模块共享表没有意义"写进边界，同时声明支持 1.0。
+> 本版做了三件事：**①** 函数索引空间改成**整包一个**——模块 `i` 的基址 = 前面模块函数数之和，`elem` 段写 `base + f`，每个 dispatcher 除自己的函数外**还列同包其它模块的函数**（`0 => m0_f0()`），于是 B 调 A 填的槽位调到的是 A 的函数，不是 B 自己的 `f0`；**②** 表从 `Array[Int]` 升级为 `runtime.mbt` 里的 `Table` 类型（与 `Memory` 同构），"两个分开的包共享一张表"从文档禁止变成**编译错误**；**③** 新增 `shared_tab_a/b.wasm` 与 3 条可执行属性（含反面对照），边界表里那句自相矛盾的话已删除。
+> 现在唯一不受域是"两个**零依赖的生成包**之间共享实例（内存或表）"——这是打包形态，不是 1.0 语义，`decompile a.wasm b.wasm` 即消除。见 [docs/MERGE.md](docs/MERGE.md) §5、`BOUNDARY.md` D15 与 `bash script/merge.sh`。
+
 ## 一、基本信息
 
 | 项 | 内容 |
@@ -41,7 +47,8 @@ MoonBit 的 `wasm-gc` / `js` 后端无法链接 C FFI，大量存量 C/Rust 生�
 
 moonlift 读取一个符合 **WebAssembly Core 1.0** 的 `.wasm` 文件，依次完成：字节读取 → 12 个段 → 172 条 MVP 指令 → 基本块 / 控制流图 → 类型化栈模拟与表达式重建 → 构造树结构化 → MoonBit 代码生成 → 差分验证，最终写出一个 6 文件的 MoonBit 包，`moon build` 直接可编译。1.0 的语义承诺逐条落地，包括**间接调用 `call_indirect`**（C 函数指针、C++ 虚表、Rust `dyn`、解释器分派循环的唯一编译形态）与**四类导入**。
 
-正确性不靠自证：解码器与 wabt 逐指令对拍 **4,593 / 4,593 一致**；46 个模块的生成包全部 `moon check` **零错误且零告警**；**521 个调用**在生成代码与 Node 跑原始 wasm 之间逐一比对，**521 匹配、0 失败**；另有 **150 个间接调用用例**值与陷阱双向对拍；20 KB 真实编译器产物 **400 / 400 可达块**各产出一次。一键门禁 `bash script/check.sh` → `ALL GREEN`。
+导入不是本地副本：宿主用 `moonlift_bind()` 交进实例，同一 `(module, name)` 导入两次只对应一个绑定字段；多个模块可反编译进**同一个包**共享同一内存**和同一张函数表**（`A` 的 `element` 段填的槽位 `B` 调得到，调到的是 `A` 的函数）。
+正确性不靠自证：解码器与 wabt 逐指令对拍 **4,593 / 4,593 一致**；48 个模块的生成包全部 `moon check` **零错误且零告警**；**522 个调用**在生成代码与 Node 跑原始 wasm 之间逐一比对，**522 匹配、0 失败**；另有 **150 个间接调用用例**值与陷阱双向对拍；20 KB 真实编译器产物 **400 / 400 可达块**各产出一次。一键门禁 `bash script/check.sh` → `ALL GREEN`。
 
 ## 三、项目方向与通用性说明
 
@@ -54,13 +61,14 @@ moonlift 读取一个符合 **WebAssembly Core 1.0** 的 `.wasm` 文件，依次
 - **可嵌入**：核心是 `core/` 库（解码、CFG、栈模拟、结构化、代码生成、调用计划），CLI 只是薄壳，可被构建工具、IDE 插件、CI 复用。
 - **边界可预期**：对不支持的特性**逐函数**报稳定错误码 + 绝对字节偏移，并生成 trap 桩；不会整模块失败，也不会静默算错。
 - **支持范围就是 WebAssembly Core 1.0**：不是"1.0 的一个子集"。逐项对照见 3.1；1.0 之外的扩展（SIMD / 线程 / GC / 多值 / 批量内存生成 / 尾调用 / 异常 / 多内存多表 / memory64）**不在承诺范围**，每条报稳定错误码，二者是"标准之外"与"标准之内"的区别。
+- **唯一不覆盖的 1.0 用法是"跨包共享"，而这属于打包形态而非语义**：两个**分开的**零依赖生成包之间不能共享实例（内存或表），因为每个包自带一份 `runtime.mbt`，`pkg_a.Memory` 与 `pkg_b.Memory` 是两个类型。要共享就合并进一个包——`decompile a.wasm b.wasm -o pkg` 已实现并被门禁对拍（`BOUNDARY.md` D15）。标准内没有任何一条语义被排除。
 
 ### 3.1 对 WebAssembly Core 1.0 的逐项对照
 
 | # | 1.0 的要求 | 状态 | 证据 |
 |---|---|---|---|
 | 1 | 二进制格式：LEB128、UTF-8 名、段序与段号 | ✅ | 19 个畸形样本按**错误码 + 绝对字节偏移**拒绝 |
-| 2 | 12 个段：type / import / function / table / memory / global / export / start / element / code / data / datacount（含自定义段） | ✅ | `info` 在 46 个模块上输出段表与偏移 |
+| 2 | 12 个段：type / import / function / table / memory / global / export / start / element / code / data / datacount（含自定义段） | ✅ | `info` 在 48 个模块上输出段表与偏移 |
 | 3 | 4 种值类型、functype；1.0 限 0 或 1 个结果 | ✅ | 多结果签名报 `E112`（逐函数拒绝并留桩） |
 | 4 | **172 条指令**（控制、参数、变量、内存、数值、符号扩展、`0xFC` 子集） | ✅ **172 / 172** | 与 wabt 逐指令对拍 **4,593 / 4,593 一致，0 不符**（62 条 SIMD 按设计不尝试） |
 | 5 | 控制流：`block` / `loop` / `if` / `br` / `br_if` / `br_table` / `return` / **`call`** / **`call_indirect`** | ✅ | 400 / 400 可达块各产出一次；`call_indirect` 见第 6 行 |
@@ -73,7 +81,7 @@ moonlift 读取一个符合 **WebAssembly Core 1.0** 的 `.wasm` 文件，依次
 | 12 | `start` 段 | ✅ | 生成 `moonlift_init()`，与段铺设一起，每个实例执行一次 |
 | 13 | 陷阱语义：越界、除零、`unreachable`、间接调用三类（越界 / 空槽 / 签名不符） | ✅ | 陷阱对拍 + 消息里点名 `call_indirect` |
 | 14 | 段偏移允许 `global.get`（仅导入的不可变全局），且段铺在实例上 | ✅ | 全部段在 `moonlift_init()` 里铺到当前绑定实例；可变 / 自定义全局报 `E012` |
-| 15 | **两个模块导入同一个实例**：`A` 的 `memory.grow` 对 `B` 的 `memory.size` 可见 | ✅ 合并进一个包 | `decompile a.wasm b.wasm -o pkg`：`m0_grow(1)` 后 `m1_pages()` 从 1 变 2；绑两个实例则 `m1` 仍为 1。`script/merge.sh` 5 条属性。见 [docs/MERGE.md](docs/MERGE.md) |
+| 15 | **两个模块导入同一个实例**：`A` 的 `memory.grow` 对 `B` 的 `memory.size` 可见；`A` 的 `elem` 段填的槽位 `B` 能 `call_indirect` 调到，且调到的是 `A` 的函数 | ✅ 合并进一个包 | 内存：`m0_grow(1)` 后 `m1_pages()` 1→2，绑两个实例则仍为 1；表：`shared_tab_a` 把返回 42 的函数放进槽位 0，`m1_b_slot0()` 得 42（B 自己的 `f0` 返回 7，按模块编号会答 7）。`script/merge.sh` 9 条属性。见 [docs/MERGE.md](docs/MERGE.md) §4–§5 |
 
 **1.0 之外**（不在承诺范围，逐条报稳定错误码 + 偏移 + trap 桩）：SIMD `E102`、线程 / 原子 `E103`、GC / 引用类型 `E101`、多值 `E112`、批量内存指令生成 `E109`、尾调用 `E105`、异常 `E104`、多内存 / 多表 / memory64 `E106`。
 
@@ -112,7 +120,7 @@ moonlift 读取一个符合 **WebAssembly Core 1.0** 的 `.wasm` 文件，依次
 
 | # | 核心功能 | 实现状态 | 验证方式 |
 |---|---|---|---|
-| 1 | **模块解析 `info`**：12 个段（type / import / function / table / memory / global / export / start / element / code / data / datacount），段顺序按规范等级校验；导入段接受**四类** | 已实现 | 46 个良构模块 + 19 个畸形样本全部按预期处理 |
+| 1 | **模块解析 `info`**：12 个段（type / import / function / table / memory / global / export / start / element / code / data / datacount），段顺序按规范等级校验；导入段接受**四类** | 已实现 | 48 个良构模块 + 19 个畸形样本全部按预期处理 |
 | 2 | **指令解码 `disasm`**：172 条 MVP 指令、29 种指令形态，`.wat` 风格列出；未知操作数长度的前缀（SIMD / 原子）停止并标记 partial body | 已实现 | 与 wabt 独立对拍 **4,593 / 4,593 一致，0 不符** |
 | 3 | **控制流分析 `--cfg`**：基本块、边、支配树、自然循环、Hecht–Ullman 可归约判定；不可达块保留并标记 | 已实现 | 每个夹具 / 真实产物全部输出，78 / 78 完整函数可归约 |
 | 4 | **类型化栈模拟与表达式重建 `--stack`**：逐块模拟操作数栈、恢复表达式树，同遍完成类型检查；三类重排隐患强制溢出 | 已实现 | 真实产物 75 个主体、115 次溢出（114 强制 + 1 隐患） |
@@ -120,11 +128,11 @@ moonlift 读取一个符合 **WebAssembly Core 1.0** 的 `.wasm` 文件，依次
 | 6 | **间接调用 `call_indirect`**：函数表 + 每个签名一个 dispatcher，签名等价按结构比较；越界 / 空槽 / 签名不符三类陷阱与原件一致 | 已实现 | `table.wasm` **6 生成 / 0 拒绝**；`indirect.wasm` **12 / 0**；**150 个用例**值比值、陷阱比陷阱 |
 | 7 | **四类导入的绑定**：`MoonliftExterns` 按 `(module, name)` 去重，`moonlift_bind()` 交实例，`moonlift_init()` 把段铺到绑定的实例上；函数导入生成 trap 桩 | 已实现 | `imported.wasm` **8 生成 / 0 拒绝**，绑定 `base=4` 后五个导出与原件逐值一致；不预填任何字节 |
 | 8 | **共享实例与别名**：同一可变全局导入两次只有一个字段，写 `$a` 读 `$b` 可见；`moonlift_init()` 每个实例只执行一次 | 已实现 | `alias.wasm` **4 生成 / 0 拒绝**；`script/sharing.sh` 5 条属性、`verify.sh` 17 个调用 |
-| 9 | **多模块合包 `decompile a.wasm b.wasm`**：每个模块一组 `m{i}_` 前缀（类型用 `M{i}_`），各带一张绑定记录，`moonlift_init_all()` 统一实例化；一个包里只有一份 `runtime.mbt`，所以 `Memory` 只有一个类型 | 已实现 | `script/merge.sh` 5 条属性：`shared_a` 的段与写在 `shared_b` 里可见、`grow` 在 A 侧改的是 B 侧 `size`、绑两个实例则互不影响 |
-| 10 | **MoonBit 代码生成 `decompile`**：写出 `moon.mod` / `moon.pkg` / `module.mbt` / `funcs.mbt` / `exports.mbt` / `runtime.mbt` 六文件包；拒绝的函数生成真实签名 + trap 桩 | 已实现 | 46 / 46 生成包 `moon check` 零错误零告警；真实产物 79 个函数定义（75 主体 + 4 桩） |
-| 11 | **差分验证 `verify`**：生成调用计划 `calls.tsv`（含宿主要求），由 Node 跑原始模块出答案，再在生成包内生成 `inspect` 测试并运行比对 | 已实现 | **521 个调用、521 匹配、0 失败**；243 个 trap / NaN 跳过并单列 |
+| 9 | **多模块合包 `decompile a.wasm b.wasm`**：每个模块一组 `m{i}_` 前缀（类型用 `M{i}_`），各带一张绑定记录，`moonlift_init_all()` 统一实例化；一个包里只有一份 `runtime.mbt`，所以 `Memory` / `Table` 各只有一个类型；函数索引空间也只有一个，表槽位可跨模块寻址 | 已实现 | `script/merge.sh` 9 条属性：内存（段可见、`grow` 改 B 的 `size`、绑两个实例互不影响）+ 函数表（A 填的槽位 B 调到 A 的函数、空槽仍是 `-1`、绑两张表则互不影响） |
+| 10 | **MoonBit 代码生成 `decompile`**：写出 `moon.mod` / `moon.pkg` / `module.mbt` / `funcs.mbt` / `exports.mbt` / `runtime.mbt` 六文件包；拒绝的函数生成真实签名 + trap 桩 | 已实现 | 48 / 48 生成包 `moon check` 零错误零告警；真实产物 79 个函数定义（75 主体 + 4 桩） |
+| 11 | **差分验证 `verify`**：生成调用计划 `calls.tsv`（含宿主要求），由 Node 跑原始模块出答案，再在生成包内生成 `inspect` 测试并运行比对 | 已实现 | **522 个调用、522 匹配、0 失败**；244 个 trap / NaN 跳过并单列 |
 | 12 | **三端一致与一键门禁**：`wasm-gc` / `js` / `wasm` 全量对照；格式、编译、单测、语料、反编译、差分、间接调用、扩展语料一条命令跑完 | 已实现 | `bash script/check.sh` → `ALL GREEN`，离线 |
-| 13 | **语料与溯源**：46 个 `.wasm`（14 个自制夹具 + 1 个 20 KB 主产物 + 31 个 MoonBit 编译器真实产物），逐文件 SHA-256 + 来源说明 | 已实现 | `corpus/good/SHA256SUMS`、`corpus/extended/SHA256SUMS`、`corpus/PROVENANCE.md` |
+| 13 | **语料与溯源**：48 个 `.wasm`（16 个自制夹具 + 1 个 20 KB 主产物 + 31 个 MoonBit 编译器真实产物），逐文件 SHA-256 + 来源说明 | 已实现 | `corpus/good/SHA256SUMS`、`corpus/extended/SHA256SUMS`、`corpus/PROVENANCE.md` |
 
 ## 六、是否为原创项目、移植项目或参考已有开源项目
 
@@ -149,7 +157,7 @@ moonlift 读取一个符合 **WebAssembly Core 1.0** 的 `.wasm` 文件，依次
 
 - **本项目许可证：Apache-2.0**（见 `LICENSE`）。
 - 第三方归属逐项标注于 `NOTICE`；语料来源、许可证与 SHA-256 见 `corpus/PROVENANCE.md`。
-- 46 个 `.wasm` 全部自制或由 MoonBit 编译器产出，**无第三方二进制**。
+- 48 个 `.wasm` 全部自制或由 MoonBit 编译器产出，**无第三方二进制**。
 
 ## 八、完成情况（实测于 2026-11-25）
 
@@ -159,12 +167,12 @@ moonlift 读取一个符合 **WebAssembly Core 1.0** 的 `.wasm` 文件，依次
 
 | 指标 | 结果 |
 |---|---|
-| MoonBit 源码（要求 ≥500 行） | **16,051** 行（生产 13,305 + 测试 2,746） |
-| 白盒单测 | **167 / 167**，`wasm-gc` 与 `js` 双端通过 |
-| 语料 | **46** 个模块（14 个自制夹具 + 1 个 20 KB 主产物 + 31 个真实编译器产物）+ **19** 个畸形样本按码 + 偏移全部按预期拒绝 |
-| 与独立实现一致 | wabt 逐指令 **4,593 / 4,593**；Node 跑原件差分 **521 / 521**；间接调用值 / 陷阱 **150 个用例 0 失败**；三端分析输出逐字节一致 |
-| 生成物质量 | **46 / 46** 生成包 `moon check` 零错误零告警；20 KB 真实产物 **400 / 400** 可达块各产出一次 |
-| 跨模块共享 | 合并包 **4 条断言**全过（A `grow` → B `size`）；拆成两个包时同一操作为 1 页不变 |
+| MoonBit 源码（要求 ≥500 行） | **16,277** 行（生产 13,460 + 测试 2,817） |
+| 白盒单测 | **169 / 169**，`wasm-gc` 与 `js` 双端通过 |
+| 语料 | **48** 个模块（16 个自制夹具 + 1 个 20 KB 主产物 + 31 个真实编译器产物）+ **19** 个畸形样本按码 + 偏移全部按预期拒绝 |
+| 与独立实现一致 | wabt 逐指令 **4,593 / 4,593**；Node 跑原件差分 **522 / 522**；间接调用值 / 陷阱 **150 个用例 0 失败**；三端分析输出逐字节一致 |
+| 生成物质量 | **48 / 48** 生成包 `moon check` 零错误零告警；20 KB 真实产物 **400 / 400** 可达块各产出一次 |
+| 跨模块共享 | 合并包 **9 条断言**全过：内存 4 条（A `grow` → B `size`）、函数表 3 条（A 填的槽位 B 调到 A 的函数）、结构性 2 条（一份 `runtime.mbt`、一个包级 init）；拆成两个包时同一操作分别为 1 页、空槽 `-1` |
 | 一键门禁 | `bash script/check.sh` → **ALL GREEN**（离线，上列各项全部在其中） |
 
 复现命令与逐项明细见 [docs/ACCEPTANCE.md](docs/ACCEPTANCE.md) §1–§3；此处只列结论。
@@ -176,10 +184,10 @@ moonlift 读取一个符合 **WebAssembly Core 1.0** 的 `.wasm` 文件，依次
 | 1 | `native` 后端未验证 | 本机无 MSVC，`--target llvm` 缺 `prelude.mi`；记录于 `BOUNDARY.md` §4.2，含安装命令 |
 | 2 | M3 有意收缩 | trap / NaN **跳过单列而非算通过**（MoonBit `trap` 是 abort，不可捕获）；浮点按精确位比较、不放宽 1 ULP；未比对调用后线性内存哈希；参数为固定对角序列而非随机 |
 | 3 | M4 部分达成 | 生成包的**行为**测试只在 `wasm-gc` 实跑；三端一致性证据是分析输出与编译 |
-| 4 | 3 个性能指标未产出 | 吞吐 KB/s、代码膨胀比、执行性能比——正确性判据是"与独立实现一致"，时间投给了 46 模块与 521 次差分，理由见 `PLAN.md` §7 |
+| 4 | 3 个性能指标未产出 | 吞吐 KB/s、代码膨胀比、执行性能比——正确性判据是"与独立实现一致"，时间投给了 48 模块与 522 次差分，理由见 `PLAN.md` §7 |
 | 5 | 1.0 之外的特性明确拒绝 | SIMD `E102`、线程 / 原子 `E103`、GC / 引用类型 `E101`、多值 `E112`、批量内存指令生成 `E109`、尾调用 `E105`、异常 `E104`、多内存 / 多表 / memory64 `E106`；逐个报码 + 绝对偏移 + trap 桩 |
 | 6 | 函数导入只能由人接管 | 生成的 `h{i}` 签名真实、函数体 `trap`：宿主函数的行为不在二进制里，猜就是伪造。见 [docs/IMPORTS.md](docs/IMPORTS.md) §1 |
-| 7 | 分开的两个包之间不能共享实例 | 每个生成包自带 `runtime.mbt`，`pkg_a.Memory` 与 `pkg_b.Memory` 是两个类型；要共享就**合并进一个包**（`decompile a.wasm b.wasm`，已实现并对拍），不合并则各自一份内存。见 [docs/MERGE.md](docs/MERGE.md) |
+| 7 | 分开的两个包之间不能共享实例（内存**或表**） | 每个生成包自带 `runtime.mbt`，`pkg_a.Memory` / `pkg_a.Table` 与 `pkg_b` 的同名类型是两个类型；要共享就**合并进一个包**（`decompile a.wasm b.wasm`，已实现并对拍）。这是打包形态的限制，不是 1.0 语义的收缩：合包之后内存与表的共享都有可执行断言。见 [docs/MERGE.md](docs/MERGE.md) |
 | 8 | 合并包里 `start` 的执行顺序由命令行决定 | `moonlift_init_all()` 按输入顺序调用；若两个模块的 `start` 通过导入全局互相依赖，顺序由人负责，不做拓扑排序 |
 | 9 | 生成代码是 witness 而非漂亮源码 | 一次性循环、`brk` 变量、`// b3` 注释——定位是"可归因、可审计、可继续开发" |
 

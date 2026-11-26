@@ -22,7 +22,7 @@ command in `script/` disagree, that is a bug in one of them.
 | Memories | exactly one, 32-bit | `memory64`, multi-memory, shared memory | `E106`, `E103` |
 | Tables | at most one, `funcref` only — indexed by `call_indirect`, initialised by active `elem` segments | a second table, `externref` tables | `E106`, `E101` |
 | Imports | all four kinds. A function import becomes a stub that traps; memory, table and global imports are **bound**: the host passes its instances to `moonlift_bind()`, the binding record is de-duplicated by `(module, name)` so repeated imports alias, and `moonlift_init()` lays the segments into the bound instances | — (nothing in 1.0) | — |
-| Several modules, one instance | two modules in one package share a `Memory` (and its `grow`), because the merge keeps one `runtime.mbt` and therefore one `Memory` type; `decompile a.wasm b.wasm -o pkg` | two *separate* packages sharing an instance — that needs a shared runtime package (D15) | D15 |
+| Several modules, one instance | two modules in one package share a `Memory` (and its `grow`) **and one function table**, because the merge keeps one `runtime.mbt` (one `Memory` type, one `Table` type) and one function index space for table slots; `decompile a.wasm b.wasm -o pkg` | two *separate* packages sharing an instance — that needs a shared runtime package (D15) | D15 |
 | Data / element segments | active, table/memory 0, offset is an `i32` constant **or** a `global.get` of an imported immutable `i32` global; the latter is laid down by `moonlift_init()` | passive segments, element expressions, a `global.get` of a mutable or module-defined global | `E109`, `E012` |
 | Control flow | reducible CFGs — guaranteed by the decoder's label-depth check, not by luck; measured 0 irreducible in 78 bodies | a `br` / `br_if` / `br_table` depth beyond the enclosing labels; irreducible CFGs are unreachable from this subset (`E108` reserved, see §3 D3) | `E008`, `E108` |
 | Typing | every body the spec validates: operand types, block results, branch payloads, function result | a body that does not type-check (only reachable from a hand-patched or non-conforming producer) | `E011` |
@@ -412,19 +412,31 @@ one binding record per module, so the host fills `env_mem` in both with the same
 `moonlift_init_all()` that instantiates them in input order. Merging is the whole mechanism — nothing
 about the instance type changed.
 
-**What is still not supported.** Sharing between two *separate* packages, which would need a shared
-runtime package and therefore a dependency the generated package does not currently have. Function
-imports stay traps. A table cannot be shared meaningfully across modules at all, because a slot holds
-a function index belonging to one module's index space. And `start` ordering across merged modules is
-the command line's order, not a topological sort.
+**Tables need one more thing.** A memory is shared by binding one object to both modules, and that is
+all. A table is shared the same way, but the *contents* have to mean the same thing to both: a slot
+holds a function index, and every module's functions start at `0`. So a merged package gets one
+function index space — module `i`'s first function sits at the sum of the previous modules' function
+counts, the element segments write `base + f`, and every `call_indirect` dispatcher carries arms for
+the *whole* package (`0 => m0_f0()`, `2 => m1_f0()`), not just for its own module. Without that, B
+calling a slot A filled would reach B's own function 0 — a wrong answer, not a trap. A single-module
+decompile has `base = 0` and no siblings, so its output is unchanged. Table values are also a type,
+not an `Array[Int]`: `Table` lives in `runtime.mbt`, so two separate packages cannot be handed one
+table even by mistake.
 
-**Impact.** `docs/MERGE.md` §4 is the before/after table; `script/merge.sh` is the five assertions;
-`corpus/good/shared_a.wasm` / `shared_b.wasm` are the pair. Pinned by the gate rather than promised.
+**What is still not supported.** Sharing between two *separate* packages — for a memory or a table —
+which would need a shared runtime package and therefore a dependency the generated package does not
+currently have. (The type system, not this paragraph, is what stops it: `pkg_a.Table` and `pkg_b.Table`
+are different types.) Function imports stay traps. And `start` ordering across merged modules is the
+command line's order, not a topological sort.
+
+**Impact.** `docs/MERGE.md` §4 is the memory before/after table and §5 the table one; `script/merge.sh`
+is the nine assertions; `corpus/good/shared_a.wasm` / `shared_b.wasm` and `shared_tab_a.wasm` /
+`shared_tab_b.wasm` are the pairs. Pinned by the gate rather than promised.
 
 ## 4. Known limitations at 0.1.0
 
-1. **The differential run covers exports, not bodies.** `script/verify.sh` compares 521 calls across
-   14 fixtures, and every one matches; a further 243 calls where the original traps or returns NaN
+1. **The differential run covers exports, not bodies.** `script/verify.sh` compares 522 calls across
+   16 fixtures, and every one matches; a further 244 calls where the original traps or returns NaN
    are skipped and counted separately. A module that imports memory, table or global *is* covered:
    the plan carries the shape of every non-function import, so Node can build the host object and
    the comparison runs on both sides (`imported` contributes 7 compared calls, and the

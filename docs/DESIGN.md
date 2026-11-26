@@ -131,7 +131,7 @@ it, `globals.wasm`'s `f4()` returns 0 where the original returns 1 — a bug tha
 
 Integers compare as decimal text, floats as **signed bit patterns**. A call whose original traps,
 or returns a NaN, is *skipped* and counted in its own column — a skipped call is not a pass. This
-is why the report prints 521 compared / 521 matched / 243 skipped rather than a single percentage.
+is why the report prints 522 compared / 522 matched / 244 skipped rather than a single percentage.
 
 ### 3.11 Sharing an instance means sharing a package
 
@@ -146,6 +146,24 @@ names start upper-case); one `moonlift_bind()` per module keeps the records sepa
 decides which instances are shared; one `moonlift_init_all()` instantiates them in the order given.
 The rejected alternative was a shared `moonlift_runtime` package, which would make every generated
 package non-zero-dependency — and "the output depends on nothing" is a property this project tests.
+
+### 3.12 A shared table needs one function index space, not just one type
+
+A table is an externval too, so two modules can import one table and a slot filled by A's element
+segment must be callable from B — and must reach *A's* function. Sharing the type is not enough: a
+slot holds a function index, and every module numbers its functions from `0`. Emitting per-module
+indices gives the worst possible failure: B calls slot 0, which now means B's own `f0` — it compiles
+and returns a plausible wrong number.
+
+So a merged package has one function index space: module `i`'s base is the sum of the previous
+modules' function counts, element segments write `base + f`, and every `call_indirect` dispatcher
+carries arms for the whole package (`0 => m0_f0()`, `2 => m1_f0()`), not only for its own module.
+A single-module decompile has `base = 0` and no siblings, which is why its output is unchanged.
+
+The table is also a type (`Table` in `runtime.mbt`), not an `Array[Int]`, for the same reason `Memory`
+is: two separate packages must not be able to pass one table to each other by accident, because the
+numbers in it would mean different functions on each side. The type makes that a compile error. Fixtures
+`shared_tab_a/b.wasm`, assertions in `script/merge.sh`, before/after table in `docs/MERGE.md` §5.
 
 ## 4. Why verification is split three ways
 
