@@ -430,10 +430,10 @@ if bash script/verify.sh > /tmp/moonlift_verify.log 2>&1; then
   matched=$(printf '%s' "$line" | sed -E 's/.*matched: ([0-9]+).*/\1/')
   skipped=$(printf '%s' "$line" | sed -E 's/.*skipped \(trap\/NaN\): ([0-9]+).*/\1/')
   failed=$(printf '%s' "$line" | sed -E 's/.*failed: ([0-9]+).*/\1/')
-  if [ "$compared" -eq 521 ] && [ "$matched" -eq 521 ] && [ "$failed" -eq 0 ]; then
-    printf 'ok   521 calls compared against Node, 521 matched, %s skipped\n' "$skipped"
+  if [ "$compared" -eq 522 ] && [ "$matched" -eq 522 ] && [ "$failed" -eq 0 ]; then
+    printf 'ok   522 calls compared against Node, 522 matched, %s skipped\n' "$skipped"
   else
-    printf 'FAIL verify: %s compared, %s matched, %s failed (expected 521/521/0)\n' \
+    printf 'FAIL verify: %s compared, %s matched, %s failed (expected 522/522/0)\n' \
       "$compared" "$matched" "$failed"
     fail=1
   fi

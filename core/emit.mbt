@@ -1737,6 +1737,75 @@ fn funcs_with_sig(m : Module, ft : FuncType) -> Array[Int32] {
 }
 
 ///|
+/// One module of a package, as the table sees it: its prefix, its module, and
+/// where its functions start in the package-wide function index space.
+///
+/// A table is an externval, so two modules importing one table share its slots —
+/// and a slot filled by module A holds *A's* function, which module B may call.
+/// A per-module index cannot express that: A's `f0` and B's `f0` would both be
+/// `0`. Hence one index space for the whole package, and a base per module.
+priv struct Member {
+  pre : String
+  m : Module
+  base : Int32
+}
+
+///|
+/// The index space this module's tables live in.
+///
+/// `base` is where this module's functions start; `sibs` are the other modules in
+/// the package, so that a dispatcher here can also resolve a slot that another
+/// module filled. Decompiling one module gives `base = 0` and no siblings, which
+/// is why the output of `moonlift decompile m.wasm` is unchanged by any of this.
+priv struct Space {
+  base : Int32
+  sibs : Array[Member]
+}
+
+///|
+/// The index space of a package holding one module: local indices, no siblings.
+fn alone() -> Space {
+  { base: 0, sibs: [], }
+}
+
+///|
+/// How a call to function `f` of module `m` is spelled. An imported function is
+/// the host's, so it goes through the `h{i}` stub.
+fn callee_name(pre : String, m : Module, f : Int32) -> String {
+  if f < m.imported_func_count() {
+    "\{pre}h\{f}"
+  } else {
+    func_name(pre, f)
+  }
+}
+
+///|
+/// Every function a `call_indirect` naming `ft` may legally reach, keyed by its
+/// package-wide index: this module's own functions, then the other modules'.
+///
+/// The sibling arms are what makes a shared table work. Module A's element
+/// segment writes A's key into a slot; module B calls through that slot; B's
+/// dispatcher has to know that key, which is only possible if both modules agree
+/// on one numbering.
+fn dispatcher_arms(
+  pre : String,
+  m : Module,
+  ft : FuncType,
+  space : Space,
+) -> Array[(Int32, String)] {
+  let out : Array[(Int32, String)] = []
+  for f in funcs_with_sig(m, ft) {
+    out.push((space.base + f, callee_name(pre, m, f)))
+  }
+  for s in space.sibs {
+    for f in funcs_with_sig(s.m, ft) {
+      out.push((s.base + f, callee_name(s.pre, s.m, f)))
+    }
+  }
+  out
+}
+
+///|
 /// The dispatcher for one `call_indirect` type index.
 ///
 /// The three run-time checks wasm performs are all here, in the order the spec
@@ -1745,7 +1814,12 @@ fn funcs_with_sig(m : Module, ft : FuncType) -> Array[Int32] {
 /// comparison at run time — it is the set of arms below. A function whose
 /// signature differs cannot match an arm, so it reaches the trap, which is
 /// exactly what the engine would raise.
-fn dispatcher_text(pre : String, m : Module, t : Int32) -> String {
+fn dispatcher_text(
+  pre : String,
+  m : Module,
+  t : Int32,
+  space : Space,
+) -> String {
   let ft = m.types[t]
   let b = StringBuilder()
   b.write_string(
@@ -1756,6 +1830,13 @@ fn dispatcher_text(pre : String, m : Module, t : Int32) -> String {
     "/// every other function index falls through to the trap. That is the wasm\n" +
     "/// type check, written as a match instead of a run-time comparison.\n",
   )
+  if space.sibs.length() > 0 {
+    b.write_string(
+      "///\n/// The arms cover the whole package, not just this module: a table is an\n" +
+      "/// externval, so another module may have filled the slot with one of its\n" +
+      "/// own functions, and this dispatcher has to reach it.\n",
+    )
+  }
   b.write_string("pub fn \{pre}__ml_indirect_t\{t}(i : Int")
   let mut k = 0
   while k < ft.params.length() {
@@ -1769,7 +1850,7 @@ fn dispatcher_text(pre : String, m : Module, t : Int32) -> String {
     b.write_string(" -> Unit")
   }
   b.write_string(" {\n")
-  let arms = funcs_with_sig(m, ft)
+  let arms = dispatcher_arms(pre, m, ft, space)
   if arms.length() == 0 {
     // Still check the index and the slot: a trap for "no such signature" that
     // fired before the bounds check would hide a real out-of-range call.
@@ -1778,13 +1859,11 @@ fn dispatcher_text(pre : String, m : Module, t : Int32) -> String {
     )
   } else {
     b.write_string("  match \{pre}__ml_table_at(i) {\n")
-    for f in arms {
-      let callee = if f < m.imported_func_count() {
-        "\{pre}h\{f}"
-      } else {
-        func_name(pre, f)
-      }
-      b.write_string("    \{f} => \{callee}(")
+    let mut n = 0
+    while n < arms.length() {
+      let key = arms[n].0
+      let callee = arms[n].1
+      b.write_string("    \{key} => \{callee}(")
       let mut j = 0
       while j < ft.params.length() {
         if j > 0 {
@@ -1794,6 +1873,7 @@ fn dispatcher_text(pre : String, m : Module, t : Int32) -> String {
         j = j + 1
       }
       b.write_string(")\n")
+      n = n + 1
     }
     b.write_string(
       "    _ => trap(\"call_indirect: table[\" + i.to_string() + \"] does not have type \{sig_text(ft)}\")\n",
@@ -1814,7 +1894,8 @@ fn table_text(pre : String, m : Module) -> String {
   let b = StringBuilder()
   b.write_string(
     "\n// The function table. wasm indexes it with an i32 at run time, so the\n" +
-    "// decompiled module holds the same table, as function indices. `-1` is a slot\n" +
+    "// decompiled module holds the same table, as function indices — *package-wide*\n" +
+    "// ones, because another module in the package may read this slot. `-1` is a slot\n" +
     "// no element segment filled: calling through it traps, as in the original.\n" +
     "// Element segments are copied in by `\{pre}moonlift_init()`, because an\n" +
     "// imported table is not known until the host binds one.\n",
@@ -1825,23 +1906,19 @@ fn table_text(pre : String, m : Module) -> String {
       None => "unreachable"
     }
     b.write_string(
-      "fn \{pre}__ml_table() -> Array[Int] {\n  \{pre}__ml_externs.val.\{field}\n}\n",
+      "fn \{pre}__ml_table() -> Table {\n  \{pre}__ml_externs.val.\{field}\n}\n",
     )
   } else {
+    b.write_string("let \{pre}__ml_table_store : Table = Table::new(\{n})\n")
     b.write_string(
-      "let \{pre}__ml_table_store : Array[Int] = Array::make(\{n}, -1)\n",
-    )
-    b.write_string(
-      "\n///|\nfn \{pre}__ml_table() -> Array[Int] {\n  \{pre}__ml_table_store\n}\n",
+      "\n///|\nfn \{pre}__ml_table() -> Table {\n  \{pre}__ml_table_store\n}\n",
     )
   }
   b.write_string(
     "\n///|\n/// The table itself, for a host that needs to look at it: an exported table\n" +
-    "/// has to be reachable, and for an imported one this is the bound array.\n",
+    "/// has to be reachable, and for an imported one this is the host's table.\n",
   )
-  b.write_string(
-    "pub fn \{pre}table() -> Array[Int] {\n  \{pre}__ml_table()\n}\n",
-  )
+  b.write_string("pub fn \{pre}table() -> Table {\n  \{pre}__ml_table()\n}\n")
   b.write_string(
     "\n///|\n/// The table slot at `i`, or a trap. An index outside the table and an\n" +
     "/// uninitialised slot are the two ways `call_indirect` fails before the type\n" +
@@ -1850,11 +1927,11 @@ fn table_text(pre : String, m : Module) -> String {
   b.write_string("pub fn \{pre}__ml_table_at(i : Int) -> Int {\n")
   b.write_string(
     "  let t = \{pre}__ml_table()\n" +
-    "  if i < 0 || i >= t.length() {\n" +
-    "    trap(\"call_indirect: index \" + i.to_string() + \" is outside table[0..\" + t.length().to_string() + \")\")\n" +
+    "  if i < 0 || i >= t.size() {\n" +
+    "    trap(\"call_indirect: index \" + i.to_string() + \" is outside table[0..\" + t.size().to_string() + \")\")\n" +
     "  }\n",
   )
-  b.write_string("  let f = t[i]\n")
+  b.write_string("  let f = t.get(i)\n")
   b.write_string(
     "  if f < 0 {\n    trap(\"call_indirect: table[\" + i.to_string() + \"] is uninitialised\")\n  }\n",
   )
@@ -1872,7 +1949,12 @@ fn table_text(pre : String, m : Module) -> String {
 /// all: its address depends on a value only the host knows, so it is filled in
 /// `moonlift_init()`, the point in the generated module's life that corresponds
 /// to instantiation.
-fn module_text(pre : String, m : Module, emitted : Array[Int32]) -> String {
+fn module_text(
+  pre : String,
+  m : Module,
+  emitted : Array[Int32],
+  space : Space,
+) -> String {
   let b = StringBuilder()
   b.write_string(
     "// Module-level state: the instances this module was instantiated against,\n" +
@@ -1961,10 +2043,10 @@ fn module_text(pre : String, m : Module, emitted : Array[Int32]) -> String {
   if m.tables.length() > 0 {
     b.write_string(table_text(pre, m))
     for t in indirect_type_indices(m) {
-      b.write_string(dispatcher_text(pre, m, t))
+      b.write_string(dispatcher_text(pre, m, t, space))
     }
   }
-  let layout = layout_text(pre, m)
+  let layout = layout_text(pre, m, space)
   if layout != "" {
     b.write_string(layout)
   }
@@ -2044,7 +2126,7 @@ fn module_text(pre : String, m : Module, emitted : Array[Int32]) -> String {
 ///
 /// Empty when there is nothing to do, so a module without segments or imported
 /// initialisers gets no extra function.
-fn layout_text(pre : String, m : Module) -> String {
+fn layout_text(pre : String, m : Module, space : Space) -> String {
   let mut any = false
   for d in m.datas {
     if d.bytes.length() > 0 {
@@ -2104,15 +2186,17 @@ fn layout_text(pre : String, m : Module) -> String {
     // `i32` is `Int` in MoonBit, which is exactly the index type of the
     // generated array, so the offset needs no conversion.
     b.write_string("  let at\{i} = \{const_of_global(pre, m, e.offset)}\n")
-    b.write_string("  if at\{i} < 0 || at\{i} + \{len} > t.length() {\n")
+    b.write_string("  if at\{i} < 0 || at\{i} + \{len} > t.size() {\n")
     b.write_string(
       "    trap(\"element segment \{i} does not fit table[0..\{n})\")\n  }\n",
     )
     let mut k = 0
     for f in e.funcs {
       // The slot holds the function *index*, not a reference to the function:
-      // the dispatchers match on it and call the name it stands for.
-      b.write_string("  t[at\{i} + \{k}] = \{f}\n")
+      // the dispatchers match on it and call the name it stands for. In a
+      // package the index is the package-wide one, so a slot this module fills
+      // stays meaningful when another module reads it.
+      b.write_string("  t.set(at\{i} + \{k}, \{space.base + f})\n")
       k = k + 1
     }
     i = i + 1
@@ -2177,7 +2261,7 @@ fn slot_ty(s : ImportSlot) -> String {
   if s.kind == "memory" {
     "Memory"
   } else if s.kind == "table" {
-    "Array[Int]"
+    "Table"
   } else {
     "Ref[\{ty_name(s.ty)}]"
   }
@@ -2191,7 +2275,7 @@ fn slot_default(s : ImportSlot) -> String {
   if s.kind == "memory" {
     "Memory::new(\{s.min}, \{s.max})"
   } else if s.kind == "table" {
-    "Array::make(\{s.min}, -1)"
+    "Table::new(\{s.min})"
   } else {
     "Ref(\{zero_text(s.ty)})"
   }
@@ -2360,6 +2444,13 @@ pub fn emit_package(m : Module) -> GenReport {
 /// decompiled into one package: a MoonBit package has a single namespace, and
 /// every module wants `f0`, `mem`, `__ml_externs` and `moonlift_init`.
 pub fn emit_package_pre(pre : String, m : Module) -> GenReport {
+  emit_package_in(pre, m, alone())
+}
+
+///|
+/// `emit_package_pre`, told where this module's functions sit in the package's
+/// index space and which other modules share it.
+fn emit_package_in(pre : String, m : Module, space : Space) -> GenReport {
   let files : Array[GenFile] = []
   let emitted : Array[Int32] = []
   let refused : Array[(Int32, Diag)] = []
@@ -2440,7 +2531,7 @@ pub fn emit_package_pre(pre : String, m : Module) -> GenReport {
     name: "moon.pkg",
     text: "// No dependencies: the generated package needs nothing\n// outside its own directory.\n",
   })
-  files.push({ name: "module.mbt", text: module_text(pre, m, emitted), })
+  files.push({ name: "module.mbt", text: module_text(pre, m, emitted, space), })
   files.push({ name: "funcs.mbt", text: funcs.to_string(), })
   files.push({ name: "exports.mbt", text: exports_text(pre, m, emitted), })
   let pages = if m.memories.length() > 0 {
@@ -2497,11 +2588,29 @@ pub fn emit_package_multi(ms : Array[Module]) -> MultiReport {
   }
   let reports : Array[GenReport] = []
   let prefixes : Array[String] = []
+  // Where each module's functions start in the package-wide function index space.
+  // A table slot written by one module has to mean the same function to the other,
+  // and "f0" cannot: every module has one.
+  let bases : Array[Int32] = []
+  let mut acc : Int32 = 0
   let mut i = 0
   while i < ms.length() {
-    let pre = "m\{i}_"
-    prefixes.push(pre)
-    reports.push(emit_package_pre(pre, ms[i]))
+    prefixes.push("m\{i}_")
+    bases.push(acc)
+    acc = acc + ms[i].func_count()
+    i = i + 1
+  }
+  i = 0
+  while i < ms.length() {
+    let sibs : Array[Member] = []
+    let mut j = 0
+    while j < ms.length() {
+      if j != i {
+        sibs.push({ pre: prefixes[j], m: ms[j], base: bases[j], })
+      }
+      j = j + 1
+    }
+    reports.push(emit_package_in(prefixes[i], ms[i], { base: bases[i], sibs, }))
     i = i + 1
   }
   let files : Array[GenFile] = []

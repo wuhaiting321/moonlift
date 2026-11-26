@@ -25,9 +25,11 @@ committed: `bash script/check.sh` never needs the network or a toolchain.
 | `alias.wasm` | `src/alias.wat` (hand-written) | 145 B | One mutable global imported twice under the same `(module, name)`: writing `$a` must be visible through `$b`. The case that decides whether imports are bound or copied |
 | `shared_a.wasm` | `src/shared_a.wat` (hand-written) | 91 B | Half of a pair that imports the *same* memory: owns `memory.grow` and a data segment. Merged with `shared_b` into one package by `script/merge.sh`, it is what makes "A grows, B sees the size" testable |
 | `shared_b.wasm` | `src/shared_b.wat` (hand-written) | 74 B | The observing half: `memory.size` and a byte load, nothing else. Alone it proves nothing; next to `shared_a` in one package it proves the memory is shared |
+| `shared_tab_a.wasm` | `src/shared_tab_a.wat` (hand-written) | 74 B | Half of a pair that imports the *same* function table: its element segment puts `$answer` (returns 42) in slot 0 |
+| `shared_tab_b.wasm` | `src/shared_tab_b.wat` (hand-written) | 65 B | The other half: calls through slot 0 and never fills one. Its own function 0 returns 7, so a per-module function index answers 7 instead of 42 — merged with `shared_tab_a` it proves the table is shared and the slots are addressed package-wide |
 | `moonbit_fib.wasm` | MoonBit compiler `0.1.20261020`, `moon build --target wasm` | 20,312 B | Real compiler output: 79 functions, 1 import, `datacount`, name section, 736 bytes of static data |
 
-SHA-256 for every one of these fourteen hand-written binaries and for `moonbit_fib.wasm` is in
+SHA-256 for every one of these sixteen hand-written binaries and for `moonbit_fib.wasm` is in
 `corpus/good/SHA256SUMS`.
 
 Command for the hand-written fixtures:
@@ -103,7 +105,7 @@ generics, traits, dispatch tables and a mutable global.
 | | |
 |---|---|
 | Modules | 31, listed individually in `corpus/extended/SHA256SUMS` |
-| Total corpus | 41 `.wasm` modules (`corpus/good/` 10 + `corpus/extended/` 31) |
+| Total corpus | 48 `.wasm` modules (`corpus/good/` 17 + `corpus/extended/` 31) |
 | Checksums | `corpus/extended/SHA256SUMS`, verified by `script/extended.sh` |
 | Gate | `bash script/extended.sh`: checksum → decode → decompile → `moon check` with zero warnings, for all 31 |
 

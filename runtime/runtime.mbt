@@ -478,6 +478,48 @@ pub struct Memory {
 }
 
 ///|
+/// The function table of a wasm instance.
+///
+/// A struct, not an `Array[Int]`, for the same reason `Memory` is one: every
+/// generated package carries its own copy of this file, so `pkg_a.Table` and
+/// `pkg_b.Table` are different types. A host cannot quietly hand one package's
+/// table to another — which matters here more than for memory, because a slot
+/// holds a *package-wide* function index and the same number means different
+/// functions in different packages. Inside one package there is one type and one
+/// numbering, and two modules that import the same table really do share it.
+///
+/// A slot holds a function index, or `-1` for the null slot: 1.0 has no
+/// instruction that writes a table, so `-1` only disappears when an element
+/// segment fills the slot. `call_indirect` on `-1` traps, as it does in wasm.
+pub struct Table {
+  /// The slots. Mutated in place by `set`: the array is mutated, the field is
+  /// never rebound, so the field itself is not `mut`.
+  slots : Array[Int32]
+}
+
+///|
+pub fn Table::new(size : Int32) -> Table {
+  { slots: Array::make(size, -1), }
+}
+
+///|
+pub fn Table::size(self : Table) -> Int32 {
+  self.slots.length()
+}
+
+///|
+/// The unchecked read. Bounds and the null slot are checked by the generated
+/// `__ml_table_at`, which is the only caller.
+pub fn Table::get(self : Table, i : Int32) -> Int32 {
+  self.slots[i]
+}
+
+///|
+pub fn Table::set(self : Table, i : Int32, f : Int32) -> Unit {
+  self.slots[i] = f
+}
+
+///|
 pub fn Memory::new(pages : Int32, max_pages : Int32) -> Memory {
   let p = if max_pages < pages { pages } else { max_pages }
   { data: FixedArray::make(pages * 65536, b'\x00'), pages, max_pages: p, }

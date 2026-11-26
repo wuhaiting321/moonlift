@@ -25,6 +25,12 @@
 #      in A is a load in B, and `memory.grow` in A changes `memory.size` in B.
 #   4. With two `Memory` values bound: B stays at one page after A grows — the
 #      sharing is the host's choice, not a side effect of merging.
+#
+# Then the same three questions for a shared *function table*, because a table is
+# an externval too: A's element segment fills a slot, B calls through it, and the
+# answer has to be A's function. `shared_tab_a` fills slot 0 with a function that
+# returns 42; `shared_tab_b` only calls through slot 0, and its own function 0
+# returns 7 — so a per-module index answers 7, which is the bug this pair catches.
 set -uo pipefail
 
 cd "$(dirname "$0")/.." || exit 1
@@ -85,6 +91,40 @@ if ( cd "$pkg" && moon test --target "${TARGET:-wasm-gc}" > "$tmp/test.log" 2>&1
   ok "merge: one memory, four properties" "$(grep -E '^Total tests' "$tmp/test.log" | head -1)"
 else
   no "merge: one memory, four properties" "see $tmp/test.log"
+fi
+
+# --- the same questions for a shared function table ------------------------
+tabpkg="$tmp/tabpkg"
+if moon run cmd/main --target "${TARGET:-wasm-gc}" -- decompile \
+  corpus/good/shared_tab_a.wasm corpus/good/shared_tab_b.wasm -o "$tabpkg" \
+  > "$tmp/tab_decompile.log" 2>&1; then
+  ok "table: two modules, one table" "$(grep -c 'prefix m' "$tmp/tab_decompile.log") prefixed"
+else
+  no "table: two modules, one table" "see $tmp/tab_decompile.log"
+fi
+
+if ( cd "$tabpkg" && moon check > "$tmp/tab_check.log" 2>&1 ); then
+  ok "table: the merged package compiles cleanly" "moon check"
+else
+  no "table: the merged package compiles cleanly" "see $tmp/tab_check.log"
+  tail -6 "$tmp/tab_check.log"
+fi
+
+# The mechanism, in one line of generated code: m1's dispatcher has an arm that
+# calls m0's function, because the slot m0 filled may hold it.
+if grep -q '^    0 => m0_f0()$' "$tabpkg/module.mbt" &&
+  grep -q '^    2 => m1_f0()$' "$tabpkg/module.mbt"; then
+  ok "table: one index space, both modules in it" "0 => m0_f0, 2 => m1_f0"
+else
+  no "table: one index space, both modules in it" "see module.mbt"
+fi
+
+cp script/smoke/merge_tab_wbtest.mbt "$tabpkg/merge_tab_wbtest.mbt"
+if ( cd "$tabpkg" && moon test --target "${TARGET:-wasm-gc}" > "$tmp/tab_test.log" 2>&1 ); then
+  ok "table: one table, three properties" "$(grep -E '^Total tests' "$tmp/tab_test.log" | head -1)"
+else
+  no "table: one table, three properties" "see $tmp/tab_test.log"
+  tail -12 "$tmp/tab_test.log"
 fi
 
 printf 'merge: %d ok, %d failed\n' "$pass" "$fail"

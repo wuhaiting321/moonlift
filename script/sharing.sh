@@ -126,7 +126,7 @@ imported_pre=$(cat <<'EOF'
 ///|
 test "imported: before init the bound memory is still empty" {
   moonlift_bind({
-    env_tbl: Array::make(8, -1),
+    env_tbl: Table::new(8),
     env_mem: Memory::new(1, 2),
     env_base: Ref(4),
     env_bump: Ref(0),
@@ -142,7 +142,7 @@ imported_bound=$(cat <<'EOF'
 ///|
 test "imported: init copies the segments into the bound instance" {
   moonlift_bind({
-    env_tbl: Array::make(8, -1),
+    env_tbl: Table::new(8),
     env_mem: Memory::new(1, 2),
     env_base: Ref(4),
     env_bump: Ref(0),
@@ -157,7 +157,7 @@ test "imported: init copies the segments into the bound instance" {
 ///|
 test "imported: another base moves the segment and the slot together" {
   moonlift_bind({
-    env_tbl: Array::make(8, -1),
+    env_tbl: Table::new(8),
     env_mem: Memory::new(1, 2),
     env_base: Ref(2),
     env_bump: Ref(0),
@@ -170,7 +170,7 @@ test "imported: another base moves the segment and the slot together" {
 ///|
 test "imported: the bound mutable global is written, not copied" {
   moonlift_bind({
-    env_tbl: Array::make(8, -1),
+    env_tbl: Table::new(8),
     env_mem: Memory::new(1, 2),
     env_base: Ref(4),
     env_bump: Ref(41),

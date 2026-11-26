@@ -23,7 +23,7 @@ test "the host binds the instances, and the segments follow them" {
   // Binding, not pre-filling: a fresh memory is handed over, and
   // `moonlift_init()` is what copies the module's segments into it.
   moonlift_bind({
-    env_tbl: Array::make(8, -1),
+    env_tbl: Table::new(8),
     env_mem: Memory::new(1, 2),
     env_base: Ref(4),
     env_bump: Ref(0),
